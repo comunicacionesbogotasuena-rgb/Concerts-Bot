@@ -124,3 +124,48 @@ def main():
 
     new_events = []
     for ev in events:
+        key = ev["id"] or f"{ev['title']}_{ev['date']}"
+        if key not in known_ids:
+            ev["category"] = classify_genre(ev["title"], ev["hint"])
+            ev["key"] = key
+            new_events.append(ev)
+
+    if not new_events:
+        print("No hay eventos nuevos hoy.")
+        return
+
+    priority = {"METAL": 0, "ROCK": 1, "OTROS": 2}
+    new_events.sort(key=lambda x: priority.get(x["category"], 2))
+
+    messages = [f"🚨 *Nuevos Conciertos Detectados* ({len(new_events)})\n-------------------------------------\n\n"]
+    for ev in new_events:
+        badge = "⚡ [OTROS]"
+        if ev["category"] == "METAL":
+            badge = "🔥 *[METAL]*"
+        elif ev["category"] == "ROCK":
+            badge = "🎸 *[ROCK]*"
+
+        card = (
+            f"{badge} *{ev['title']}*\n"
+            f"📅 *Fecha:* {ev['date']}\n"
+            f"🏢 *Promotora:* {ev['source']}\n"
+            f"🔗 [Ver Entradas / Info]({ev['url']})\n\n"
+        )
+        if len(messages[-1]) + len(card) > 3800:
+            messages.append(card)
+        else:
+            messages[-1] += card
+
+    for msg in messages:
+        send_telegram(msg)
+
+    for ev in new_events:
+        known_ids.add(ev["key"])
+
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(list(known_ids), f, ensure_ascii=False, indent=2)
+
+    print(f"Notificados {len(new_events)} eventos.")
+
+if __name__ == "__main__":
+    main()
