@@ -122,4 +122,38 @@ def create_bogota_suena_poster(poster_url: str, banda: str, fecha_str: str) -> i
 
         # Afiche central enmarcado
         p_w, p_h = original_poster.size
-        target_h = int
+        target_h = int(height * 0.52)
+        target_w = int((p_w / p_h) * target_h)
+        if target_w > width - 120:
+            target_w = width - 120
+            target_h = int((p_h / p_w) * target_w)
+
+        central_img = original_poster.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        offset_x = (width - target_w) // 2
+        offset_y = 150
+        
+        # Borde naranja estilo fanzine
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle([offset_x - 6, offset_y - 6, offset_x + target_w + 6, offset_y + target_h + 6], outline=COLOR_ORANGE, width=4)
+        canvas.paste(central_img, (offset_x, offset_y))
+    else:
+        draw = ImageDraw.Draw(canvas)
+
+    draw = ImageDraw.Draw(canvas)
+
+    # 2. Badge superior: PRÓXIMO CONCIERTO
+    badge_w, badge_h = 420, 50
+    badge_x, badge_y = 60, 60
+    draw.rectangle([badge_x, badge_y, badge_x + badge_w, badge_y + badge_h], fill=COLOR_ORANGE)
+    draw.text((badge_x + 25, badge_y + 12), "PRÓXIMO CONCIERTO", fill=(0, 0, 0))
+
+    # 3. Datos del evento
+    banda_clean = banda.split("@")[0].strip().upper()
+    info_y = int(height * 0.74)
+    
+    # Barra naranja con el nombre del artista
+    draw.rectangle([50, info_y, width - 50, info_y + 90], fill=COLOR_ORANGE)
+    draw.text((70, info_y + 25), banda_clean[:22], fill=(0, 0, 0))
+
+    # Ciudad y Fecha
+    draw.text((70, info_y + 115), "BOGOTÁ", fill=COLOR
