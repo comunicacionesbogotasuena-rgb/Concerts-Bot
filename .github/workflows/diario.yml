@@ -1,0 +1,41 @@
+name: Scraper Conciertos Rock y Metal
+
+on:
+  schedule:
+    # Se ejecuta todos los días a las 07:00 UTC (02:00 AM hora Bogotá)
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape-and-notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install requests beautifulsoup4 playwright
+          playwright install --with-deps chromium
+
+      - name: Ejecutar Scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scraper_conciertos.py
+
+      - name: Guardar historial
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add eventos_registrados.json || exit 0
+          git commit -m "Actualizar conciertos registrados [skip ci]" || exit 0
+          git push
