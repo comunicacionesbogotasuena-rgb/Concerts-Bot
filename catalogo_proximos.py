@@ -12,15 +12,8 @@ HEADERS = {
 }
 
 def parse_date(ev_tag, raw_text: str) -> datetime:
-    """Extrae la fecha en formato datetime para ordenar cronológicamente."""
-    time_tag = ev_tag.select_one("time")
-    if time_tag and time_tag.get("datetime"):
-        dt_str = time_tag["datetime"][:10]
-        try:
-            return datetime.strptime(dt_str, "%Y-%m-%d")
-        except Exception:
-            pass
-
+    """Extrae la fecha del evento para ordenar de menor a mayor."""
+    # 1. Enlaces a Google Calendar (dates=YYYYMMDD...)
     cal_link = ev_tag.select_one("a[href*='calendar.google.com']")
     if cal_link and cal_link.has_attr("href"):
         match = re.search(r"dates=(\d{4})(\d{2})(\d{2})", cal_link["href"])
@@ -31,6 +24,16 @@ def parse_date(ev_tag, raw_text: str) -> datetime:
             except Exception:
                 pass
 
+    # 2. Atributo datetime en <time>
+    time_tag = ev_tag.select_one("time")
+    if time_tag and time_tag.get("datetime"):
+        dt_str = time_tag["datetime"][:10]
+        try:
+            return datetime.strptime(dt_str, "%Y-%m-%d")
+        except Exception:
+            pass
+
+    # 3. Formato numérico YYYY-MM-DD o DD/MM/YYYY
     match_iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw_text)
     if match_iso:
         try:
@@ -63,10 +66,10 @@ def send_telegram_photo(caption: str, photo_url: str):
             resp = requests.post(url, data=data, timeout=15)
             if resp.status_code == 200:
                 return
-            print(f"No cargó foto ({photo_url}), status: {resp.status_code}")
-        except Exception as e:
-            print(f"Error enviando foto: {e}")
+        except Exception:
+            pass
 
+    # Fallback si no carga la imagen
     text_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(text_url, data={"chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML"}, timeout=15)
 
@@ -79,20 +82,29 @@ def scrape_factor_metal():
             return conciertos
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        eventos = soup.select(".type-tribe_events, article, .tribe-events-calendar-list__event-row")
+        # Selector flexible compatible con la estructura de Factor Metal
+        eventos = soup.select(".type-tribe_events, article, .event-item, .tribe-events-calendar-list__event-row")
 
         for ev in eventos:
-            title_tag = ev.select_one(".tribe-events-calendar-list__event-title-link, .tribe-events-list-event-title a, h2 a, h3 a")
+            title_tag = ev.select_one("h2, h3, .tribe-events-list-event-title, .tribe-events-calendar-list__event-title")
             if not title_tag:
                 continue
 
             titulo = title_tag.get_text(strip=True)
-            link = title_tag.get("href", url)
+            if not titulo:
+                continue
+
+            # Buscar link en el título o en el primer enlace interno del bloque
+            link = url
+            enlace_tag = title_tag.find("a") or ev.select_one("a:not([href*='calendar.google.com']):not([href*='maps.google.com'])")
+            if enlace_tag and enlace_tag.has_attr("href"):
+                link = enlace_tag["href"]
 
             time_tag = ev.select_one("time, .tribe-event-date-start, .tribe-events-calendar-list__event-datetime")
             fecha_str = time_tag.get_text(strip=True) if time_tag else "Próximamente"
             dt_obj = parse_date(ev, ev.get_text(" ", strip=True))
 
+            # Obtención de imagen
             img_tag = ev.select_one("img")
             img_src = ""
             if img_tag:
@@ -116,6 +128,7 @@ def scrape_factor_metal():
     except Exception as e:
         print(f"Error scraping Factor Metal: {e}")
 
+    # Orden cronológico (los más cercanos primero)
     conciertos.sort(key=lambda x: x["dt"])
     return conciertos
 
@@ -124,7 +137,7 @@ def main():
         print("Faltan credenciales de Telegram.")
         return
 
-    print("Scrapeando y organizando cartelera por fecha...")
+    print("Scrapeando cartelera...")
     eventos = scrape_factor_metal()
 
     if not eventos:
@@ -139,7 +152,7 @@ def main():
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         data={
             "chat_id": CHAT_ID,
-            "text": f"📅 <b>CARTELERA ORDENADA POR FECHA</b>\n(De los más próximos a los más lejanos - {len(eventos)} conciertos confirmados):",
+            "text": f"📅 <b>CARTELERA ROCK & METAL COLOMBIA</b>\n(Ordenada por fecha — {len(eventos)} conciertos confirmados):",
             "parse_mode": "HTML"
         },
         timeout=10
