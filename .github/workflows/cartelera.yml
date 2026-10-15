@@ -1,26 +1,125 @@
-name: Cartelera Proximos Conciertos
+import os
+import re
+import io
+import time
+from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
 
-on:
-  workflow_dispatch:
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-jobs:
-  cartelera:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Descargar repositorio
-        uses: actions/checkout@v3
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
-      - name: Instalar Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+# Paleta Bogotá Suena (Estilo Fanzine)
+COLOR_ORANGE = (255, 92, 0)
+COLOR_DARK = (15, 15, 15)
+COLOR_WHITE = (255, 255, 255)
+COLOR_GRAY = (180, 180, 180)
 
-      - name: Instalar dependencias
-        run: |
-          pip install requests beautifulsoup4
+def parse_date(ev_tag, raw_text: str) -> datetime:
+    """Extrae la fecha del evento para ordenar cronológicamente de menor a mayor."""
+    cal_link = ev_tag.select_one("a[href*='calendar.google.com']")
+    if cal_link and cal_link.has_attr("href"):
+        match = re.search(r"dates=(\d{4})(\d{2})(\d{2})", cal_link["href"])
+        if match:
+            try:
+                y, m, d = match.groups()
+                return datetime(int(y), int(m), int(d))
+            except Exception:
+                pass
 
-      - name: Ejecutar Cartelera
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python catalogo_proximos.py
+    time_tag = ev_tag.select_one("time")
+    if time_tag and time_tag.get("datetime"):
+        dt_str = time_tag["datetime"][:10]
+        try:
+            return datetime.strptime(dt_str, "%Y-%m-%d")
+        except Exception:
+            pass
+
+    match_iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw_text)
+    if match_iso:
+        try:
+            y, m, d = match_iso.groups()
+            return datetime(int(y), int(m), int(d))
+        except Exception:
+            pass
+
+    match_latam = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw_text)
+    if match_latam:
+        try:
+            d, m, y = match_latam.groups()
+            return datetime(int(y), int(m), int(d))
+        except Exception:
+            pass
+
+    return datetime(2099, 12, 31)
+
+def extract_details(event_url: str):
+    """Extrae el afiche oficial y el enlace directo de compra de boletas."""
+    poster_url = ""
+    ticket_link = ""
+
+    if not event_url or "factormetal.com/eventos/" == event_url:
+        return poster_url, ticket_link
+
+    try:
+        resp = requests.get(event_url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # 1. Afiche original en alta resolución
+            og_img = soup.select_one("meta[property='og:image']")
+            if og_img and og_img.get("content"):
+                url_img = og_img["content"]
+                if "default" not in url_img.lower() and "logo" not in url_img.lower():
+                    poster_url = url_img
+
+            if not poster_url:
+                img = soup.select_one(".tribe-events-event-image img, article img")
+                if img:
+                    poster_url = img.get("data-orig-file") or img.get("src") or ""
+
+            # 2. Enlace de compra / tiquetera
+            keywords = ["tuboleta", "ticketmaster", "eticket", "alltickets", "passline", "biciq", "entradas", "boletas", "ticket"]
+            for a in soup.select("a[href]"):
+                href = a["href"].lower()
+                text = a.get_text().lower()
+                if any(kw in href or kw in text for kw in keywords):
+                    if not any(ign in href for ign in ["factormetal", "facebook", "twitter", "instagram", "calendar.google", "maps.google"]):
+                        ticket_link = a["href"]
+                        break
+    except Exception as e:
+        print(f"Error extrayendo detalles: {e}")
+
+    return poster_url, ticket_link
+
+def create_bogota_suena_poster(poster_url: str, banda: str, fecha_str: str) -> io.BytesIO:
+    """Genera la pieza fanzine para Instagram (1080x1350) con la identidad de Bogotá Suena."""
+    width, height = 1080, 1350
+    canvas = Image.new("RGB", (width, height), COLOR_DARK)
+
+    # 1. Imagen base / afiche
+    original_poster = None
+    if poster_url and poster_url.startswith("http"):
+        try:
+            r = requests.get(poster_url, headers=HEADERS, timeout=12)
+            if r.status_code == 200:
+                original_poster = Image.open(io.BytesIO(r.content)).convert("RGB")
+        except Exception:
+            pass
+
+    if original_poster:
+        # Fondo oscuro desenfocado
+        bg = original_poster.resize((width, height))
+        bg = bg.filter(ImageFilter.GaussianBlur(35))
+        enhancer = ImageEnhance.Brightness(bg)
+        bg = enhancer.enhance(0.35)
+        canvas.paste(bg, (0, 0))
+
+        # Afiche central enmarcado
+        p_w, p_h = original_poster.size
+        target_h = int
