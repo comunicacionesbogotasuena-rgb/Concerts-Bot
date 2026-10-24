@@ -4,7 +4,7 @@ import os
 import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -23,7 +23,9 @@ KEYWORDS_METAL = [
     "power metal", "doom", "sludge", "grindcore", "metalcore",
     "nu metal", "groove metal", "slayer", "opeth", "slipknot",
     "dying fetus", "malevolent creation", "epica", "hammerfall",
-    "testament", "dethklok", "angeles del infierno", "kraken"
+    "testament", "dethklok", "angeles del infierno", "kraken",
+    "hellripper", "saor", "kanonenfieber", "avatar", "equilibrium",
+    "slaughter to prevail", "eleine", "roberto tiranti"
 ]
 
 KEYWORDS_ROCK = [
@@ -31,28 +33,30 @@ KEYWORDS_ROCK = [
     "alternative rock", "rock alternativo", "hard rock", "bunbury",
     "caifanes", "the strokes", "placebo",
     "los fabulosos cadillacs", "def leppard", "soda stereo",
-    "aterciopelados", "conociendo rusia", "maná", "mana"
+    "aterciopelados", "conociendo rusia", "maná", "mana",
+    "the rasmus", "hombres g", "hammerfall"
 ]
 
 
 def classify_genre(title: str) -> str:
     text = title.lower()
 
-    for kw in KEYWORDS_METAL:
-        if re.search(r"\b" + re.escape(kw) + r"\b", text):
+    for keyword in KEYWORDS_METAL:
+        if re.search(r"\b" + re.escape(keyword) + r"\b", text):
             return "METAL"
 
-    for kw in KEYWORDS_ROCK:
-        if re.search(r"\b" + re.escape(kw) + r"\b", text):
+    for keyword in KEYWORDS_ROCK:
+        if re.search(r"\b" + re.escape(keyword) + r"\b", text):
             return "ROCK"
 
     return "OTROS"
 
 
-def send_telegram(text: str):
+def send_telegram(message: str) -> bool:
+    """Envía un mensaje y devuelve True solo si Telegram lo acepta."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("ERROR: Faltan credenciales de Telegram.")
-        return
+        return False
 
     url = (
         f"https://api.telegram.org/"
@@ -61,63 +65,69 @@ def send_telegram(text: str):
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
+        "text": message,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         print("Telegram status:", response.status_code)
         response.raise_for_status()
 
         result = response.json()
-        if not result.get("ok"):
-            print("Telegram informó un error:", result)
 
-    except Exception as e:
-        print(f"Error enviando a Telegram: {e}")
+        if result.get("ok"):
+            return True
+
+        print("Telegram informó un error:", result)
+        return False
+
+    except Exception as error:
+        print(f"Error enviando a Telegram: {error}")
+        return False
+
+
+def make_event(source: str, title: str, url: str) -> dict:
+    normalized_url = url.rstrip("/")
+    return {
+        "id": normalized_url,
+        "source": source,
+        "title": title.strip(),
+        "url": normalized_url
+    }
 
 
 # 1. FACTOR METAL
 def get_factor_metal():
     events = []
+    url = "https://www.factormetal.com/conciertos/"
 
     try:
-        url = "https://www.factormetal.com/conciertos/"
-        response = requests.get(
-            url, headers=HEADERS, timeout=15
-        )
+        response = requests.get(url, headers=HEADERS, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
+        for item in soup.find_all("li"):
+            text = item.get_text(" ", strip=True)
+            link_tag = item.find("a", href=True)
 
-            for item in soup.find_all("li"):
-                text = item.get_text(" ", strip=True)
-                link_tag = item.find("a", href=True)
+            if (
+                "@" in text
+                and ("Bogotá" in text or "Bogota" in text
+                     or "Colombia" in text)
+            ):
+                title = text.split("@")[0].strip()
+                link = (
+                    urljoin(url, link_tag["href"])
+                    if link_tag else url
+                )
+                events.append(
+                    make_event("Factor Metal", title, link)
+                )
 
-                if (
-                    "@" in text
-                    and (
-                        "Bogotá" in text
-                        or "Colombia" in text
-                    )
-                ):
-                    title = text.split("@")[0].strip()
-                    link = (
-                        urljoin(url, link_tag["href"])
-                        if link_tag else url
-                    )
-
-                    events.append({
-                        "id": f"fm_{title}",
-                        "source": "Factor Metal (Colombia)",
-                        "title": title,
-                        "url": link
-                    })
-
-    except Exception as e:
-        print(f"Error Factor Metal: {e}")
+    except Exception as error:
+        print(f"Error Factor Metal: {error}")
 
     return events
 
@@ -125,32 +135,30 @@ def get_factor_metal():
 # 2. TUBOLETA
 def get_tuboleta():
     events = []
+    url = "https://tuboleta.com/es/categorias/conciertos"
 
     try:
-        url = "https://tuboleta.com/es/categorias/conciertos"
-        response = requests.get(
-            url, headers=HEADERS, timeout=15
-        )
+        response = requests.get(url, headers=HEADERS, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
+            title = anchor.get_text(" ", strip=True)
 
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                title = a.get_text(" ", strip=True)
+            if "/eventos/" not in href or len(title) < 4:
+                continue
 
-                if "/eventos/" in href and len(title) > 3:
-                    full_url = urljoin(url, href)
+            full_url = urljoin(url, href)
+            host = urlparse(full_url).netloc.lower()
 
-                    events.append({
-                        "id": full_url.rstrip("/"),
-                        "source": "Tuboleta",
-                        "title": title,
-                        "url": full_url
-                    })
+            if "tuboleta.com" not in host:
+                continue
 
-    except Exception as e:
-        print(f"Error Tuboleta: {e}")
+            events.append(make_event("Tuboleta", title, full_url))
+
+    except Exception as error:
+        print(f"Error Tuboleta: {error}")
 
     return events
 
@@ -158,44 +166,47 @@ def get_tuboleta():
 # 3. TICKETMASTER COLOMBIA
 def get_ticketmaster():
     events = []
+    url = "https://www.ticketmaster.co/page/CONCIERTOS"
+
+    excluded = [
+        "politica", "terminos", "faq", "contact",
+        "comunicados", "privacidad", "ayuda"
+    ]
 
     try:
-        url = "https://www.ticketmaster.co/page/CONCIERTOS"
-        response = requests.get(
-            url, headers=HEADERS, timeout=15
-        )
+        response = requests.get(url, headers=HEADERS, timeout=20)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
+            title = anchor.get_text(" ", strip=True)
 
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                title = a.get_text(" ", strip=True)
+            if len(title) < 4:
+                continue
 
-                excluded = [
-                    "politica", "terminos", "faq",
-                    "contact", "comunicados"
-                ]
+            full_url = urljoin(url, href)
+            host = urlparse(full_url).netloc.lower()
 
-                if (
-                    len(title) > 3
-                    and not any(x in href.lower() for x in excluded)
-                ):
-                    if (
-                        "ticketmaster.co" in href
-                        or href.startswith("/")
-                    ):
-                        full_url = urljoin(url, href)
+            if "ticketmaster.co" not in host:
+                continue
 
-                        events.append({
-                            "id": full_url.rstrip("/"),
-                            "source": "Ticketmaster CO",
-                            "title": title,
-                            "url": full_url
-                        })
+            if any(word in full_url.lower() for word in excluded):
+                continue
 
-    except Exception as e:
-        print(f"Error Ticketmaster: {e}")
+            # Limitar la selección a enlaces de contenido/eventos.
+            if not any(
+                word in full_url.lower()
+                for word in ["event", "evento", "concert", "concierto"]
+            ):
+                continue
+
+            events.append(
+                make_event("Ticketmaster CO", title, full_url)
+            )
+
+    except Exception as error:
+        print(f"Error Ticketmaster: {error}")
 
     return events
 
@@ -203,32 +214,85 @@ def get_ticketmaster():
 # 4. PÁRAMO PRESENTA
 def get_paramo_presenta():
     events = []
+    url = "https://www.paramopresenta.com/eventos"
 
     try:
-        url = "https://paramopresenta.com"
-        response = requests.get(
-            url, headers=HEADERS, timeout=15
+        response = requests.get(url, headers=HEADERS, timeout=25)
+        response.raise_for_status()
+
+        # Ayuda a interpretar correctamente caracteres acentuados.
+        response.encoding = response.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
+            full_url = urljoin(url, href)
+            normalized_url = full_url.rstrip("/")
+            parsed = urlparse(full_url)
+
+            # Aceptar únicamente páginas de eventos de Páramo.
+            if parsed.netloc.lower() not in (
+                "paramopresenta.com",
+                "www.paramopresenta.com"
+            ):
+                continue
+
+            if "/eventos/" not in parsed.path.lower():
+                continue
+
+            # Evitar que la página del listado se registre como evento.
+            if normalized_url == url.rstrip("/"):
+                continue
+
+            # Intentar obtener el título de la tarjeta del evento.
+            title = ""
+            for parent in anchor.parents:
+                if parent.name in ("article", "li", "section"):
+                    heading = parent.find(
+                        ["h1", "h2", "h3", "h4", "h5"]
+                    )
+                    if heading:
+                        title = heading.get_text(" ", strip=True)
+                        break
+
+            if not title:
+                title = anchor.get_text(" ", strip=True)
+
+            # Si el enlace tiene texto genérico, usar el slug de la URL.
+            generic_titles = {
+                "", "ver evento", "comprar entradas",
+                "más información", "ver más", "conoce más"
+            }
+
+            if title.casefold() in generic_titles:
+                slug = parsed.path.rstrip("/").split("/")[-1]
+                slug = re.sub(
+                    r"-tickets-[a-z0-9]+$", "", slug,
+                    flags=re.IGNORECASE
+                )
+                title = slug.replace("-", " ").replace("_", " ").title()
+
+            if len(title) < 3:
+                continue
+
+            events.append(
+                make_event("Páramo Presenta", title, normalized_url)
+            )
+
+        # Eliminar duplicados por URL.
+        unique = {event["url"]: event for event in events}
+        events = list(unique.values())
+
+        print(
+            f"Páramo Presenta: {len(events)} "
+            "enlaces candidatos encontrados"
         )
 
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
+        for event in events:
+            print(f"  - {event['title']}: {event['url']}")
 
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                title = a.get_text(" ", strip=True)
-
-                if "/evento/" in href and len(title) > 3:
-                    full_url = urljoin(url, href)
-
-                    events.append({
-                        "id": full_url.rstrip("/"),
-                        "source": "Páramo Presenta",
-                        "title": title.split("\n")[0].strip(),
-                        "url": full_url
-                    })
-
-    except Exception as e:
-        print(f"Error Páramo: {e}")
+    except Exception as error:
+        print(f"Error Páramo Presenta: {error}")
 
     return events
 
@@ -237,61 +301,67 @@ def get_paramo_presenta():
 def get_move_concerts():
     events = []
     browser = None
+    base_url = "https://moveconcerts.com/co/"
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent=HEADERS["User-Agent"]
-            )
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
 
             page.goto(
-                "https://moveconcerts.com/co/",
-                timeout=30000
+                base_url,
+                wait_until="domcontentloaded",
+                timeout=45000
             )
-            page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(3000)
 
-            for link in page.query_selector_all("a"):
-                href = link.get_attribute("href") or ""
-                title = link.inner_text().strip()
+            for anchor in page.query_selector_all("a[href]"):
+                href = anchor.get_attribute("href") or ""
+                title = anchor.inner_text().strip()
 
-                if not title or len(title) <= 3:
+                if len(title) < 4:
                     continue
 
-                href_lower = href.lower()
+                full_url = urljoin(base_url, href)
+                host = urlparse(full_url).netloc.lower()
 
-                if any(
-                    key in href_lower
-                    for key in [
+                if "moveconcerts.com" not in host:
+                    continue
+
+                if not any(
+                    word in full_url.lower()
+                    for word in [
                         "show", "concierto", "evento",
-                        "moveconcerts.com"
+                        "event", "tour", "artist"
                     ]
                 ):
-                    if any(
-                        skip in href_lower
-                        for skip in [
-                            "politica", "terminos",
-                            "contacto", "quienes-somos"
-                        ]
-                    ):
-                        continue
+                    continue
 
-                    full_url = urljoin(
-                        "https://moveconcerts.com/co/", href
-                    )
+                if any(
+                    word in full_url.lower()
+                    for word in [
+                        "politica", "terminos", "contacto",
+                        "quienes-somos", "privacy"
+                    ]
+                ):
+                    continue
 
-                    events.append({
-                        "id": full_url.rstrip("/"),
-                        "source": "Move Concerts",
-                        "title": title.split("\n")[0].strip(),
-                        "url": full_url
-                    })
+                events.append(
+                    make_event("Move Concerts", title, full_url)
+                )
 
             browser.close()
+            browser = None
 
-    except Exception as e:
-        print(f"Error Move Concerts: {e}")
+    except Exception as error:
+        print(f"Error Move Concerts: {error}")
+
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     return events
 
@@ -302,93 +372,161 @@ def get_lemmyprods():
     url = "https://www.lemmyprods.com/eventos/"
 
     try:
-        response = requests.get(
-            url, headers=HEADERS, timeout=20
-        )
+        response = requests.get(url, headers=HEADERS, timeout=25)
         response.raise_for_status()
-
+        response.encoding = response.apparent_encoding or "utf-8"
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Primero se buscan enlaces dentro de bloques habituales
-        # de eventos; después se aplica el filtro de URL.
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            title = a.get_text(" ", strip=True)
-
-            if not title or len(title) < 4:
-                continue
-
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
             full_url = urljoin(url, href)
+            parsed = urlparse(full_url)
             normalized_url = full_url.rstrip("/")
+            title = anchor.get_text(" ", strip=True)
 
-            # Excluir la página de listado y enlaces externos.
-            if normalized_url == url.rstrip("/"):
-                continue
-
-            if not full_url.startswith(
-                "https://www.lemmyprods.com/"
+            if parsed.netloc.lower() not in (
+                "lemmyprods.com",
+                "www.lemmyprods.com"
             ):
                 continue
 
-            # Solo candidatos que apuntan a páginas de eventos.
-            if "/eventos/" not in full_url.lower():
+            if "/eventos/" not in parsed.path.lower():
                 continue
 
-            events.append({
-                "id": normalized_url,
-                "source": "Lemmy Productions",
-                "title": title,
-                "url": normalized_url
-            })
+            if normalized_url == url.rstrip("/"):
+                continue
 
-        # Eliminar enlaces repetidos de la misma página.
-        unique = {}
-        for event in events:
-            unique[event["url"]] = event
+            if len(title) < 4:
+                continue
 
+            events.append(
+                make_event("Lemmy Productions", title, normalized_url)
+            )
+
+        unique = {event["url"]: event for event in events}
         events = list(unique.values())
 
         print(
-            f"Lemmy Productions: "
-            f"{len(events)} enlaces candidatos encontrados"
+            f"Lemmy Productions: {len(events)} "
+            "enlaces candidatos encontrados"
         )
 
         for event in events:
             print(f"  - {event['title']}: {event['url']}")
 
-    except Exception as e:
-        print(f"Error Lemmy Productions: {e}")
+    except Exception as error:
+        print(f"Error Lemmy Productions: {error}")
 
     return events
 
 
+def load_history(filename: str) -> set:
+    """Carga el historial existente sin borrarlo."""
+    if not os.path.exists(filename):
+        return set()
+
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        if isinstance(data, list):
+            return set(str(item) for item in data)
+
+        print("Advertencia: el historial no es una lista.")
+
+    except (json.JSONDecodeError, OSError) as error:
+        print(f"Error leyendo historial: {error}")
+        print("Se conserva el archivo y se inicia con historial vacío.")
+
+    return set()
+
+
+def save_history(filename: str, known_ids: set) -> bool:
+    try:
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(
+                sorted(known_ids),
+                file,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        print("Historial actualizado correctamente.")
+        return True
+
+    except OSError as error:
+        print(f"Error guardando historial: {error}")
+        return False
+
+
+def build_messages(events: list) -> list:
+    priority = {"METAL": 0, "ROCK": 1, "OTROS": 2}
+    events.sort(
+        key=lambda event: priority.get(event["category"], 2)
+    )
+
+    messages = []
+    current_message = (
+        f"🚨 *Nuevos conciertos y eventos ({len(events)})*\n"
+        "-------------------------------------\n\n"
+    )
+
+    for event in events:
+        category = event["category"]
+
+        if category == "METAL":
+            badge = "🔥 *[METAL]*"
+        elif category == "ROCK":
+            badge = "🎸 *[ROCK]*"
+        else:
+            badge = "⚡ *[OTROS]*"
+
+        # Evitar caracteres que alteren el formato Markdown.
+        title = event["title"].replace("*", "").replace("_", "\\_")
+        source = event["source"].replace("*", "").replace("_", "\\_")
+        url = event["url"]
+
+        card = (
+            f"{badge} *{title}*\n"
+            f"🏢 *Fuente:* {source}\n"
+            f"🔗 [Ver evento]({url})\n\n"
+        )
+
+        if len(current_message) + len(card) > 3500:
+            messages.append(current_message)
+            current_message = card
+        else:
+            current_message += card
+
+    if current_message.strip():
+        messages.append(current_message)
+
+    return messages
+
+
 def main():
     history_file = "eventos_registrados.json"
-    known_ids = set()
-
-    # Leer el historial existente sin borrarlo.
-    if os.path.exists(history_file):
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-                if isinstance(data, list):
-                    known_ids = set(data)
-                else:
-                    print("Advertencia: historial no es una lista.")
-
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"Error leyendo historial: {e}")
-            print("Se inicia con historial vacío.")
+    known_ids = load_history(history_file)
 
     # Consultar todas las fuentes.
     raw_events = []
-    raw_events.extend(get_factor_metal())
-    raw_events.extend(get_tuboleta())
-    raw_events.extend(get_ticketmaster())
-    raw_events.extend(get_paramo_presenta())
-    raw_events.extend(get_move_concerts())
-    raw_events.extend(get_lemmyprods())
+    sources = [
+        get_factor_metal,
+        get_tuboleta,
+        get_ticketmaster,
+        get_paramo_presenta,
+        get_move_concerts,
+        get_lemmyprods
+    ]
+
+    for source_function in sources:
+        try:
+            raw_events.extend(source_function())
+        except Exception as error:
+            print(
+                f"Error inesperado en {source_function.__name__}: "
+                f"{error}"
+            )
 
     print(f"Total de elementos recopilados: {len(raw_events)}")
 
@@ -398,99 +536,52 @@ def main():
     for event in raw_events:
         title = event.get("title", "").strip()
         url = event.get("url", "").strip().rstrip("/")
-        event_id = event.get("id", url)
 
         if len(title) < 3 or not url:
             continue
 
         event["title"] = title
         event["url"] = url
-        event["id"] = event_id
+        event["id"] = url
 
-        if url not in unique_events:
-            unique_events[url] = event
+        unique_events[url] = event
 
-    # Detectar novedades sin repetir lo ya registrado.
+    # Detectar eventos no registrados previamente.
     new_events = []
 
     for url, event in unique_events.items():
-        event_id = event["id"]
+        if url in known_ids or event["id"] in known_ids:
+            continue
 
-        if url not in known_ids and event_id not in known_ids:
-            event["category"] = classify_genre(event["title"])
-            new_events.append(event)
+        event["category"] = classify_genre(event["title"])
+        new_events.append(event)
 
     print(f"Novedades detectadas: {len(new_events)}")
 
-    # Si no hay novedades, no enviar ningún mensaje.
     if not new_events:
         print("Todo al día. No se envía notificación.")
         return
 
-    # Prioridad: metal, rock y otros.
-    priority = {
-        "METAL": 0,
-        "ROCK": 1,
-        "OTROS": 2
-    }
+    messages = build_messages(new_events)
 
-    new_events.sort(
-        key=lambda event: priority.get(event["category"], 2)
-    )
+    # Registrar eventos solo si todas las notificaciones se enviaron.
+    all_sent = True
 
-    messages = [
-        f"🚨 *Nuevos conciertos y eventos* "
-        f"({len(new_events)})\n"
-        "-------------------------------------\n\n"
-    ]
-
-    for event in new_events:
-        if event["category"] == "METAL":
-            badge = "🔥 *[METAL]*"
-        elif event["category"] == "ROCK":
-            badge = "🎸 *[ROCK]*"
-        else:
-            badge = "⚡ *[OTROS]*"
-
-        title = event["title"].replace("*", "")
-        url = event["url"]
-        source = event["source"].replace("*", "")
-
-        card = (
-            f"{badge} *{title}*\n"
-            f"🏢 *Fuente:* {source}\n"
-            f"🔗 [Ver evento]({url})\n\n"
-        )
-
-        if len(messages[-1]) + len(card) > 3500:
-            messages.append(card)
-        else:
-            messages[-1] += card
-
-    # Enviar las notificaciones.
     for message in messages:
-        send_telegram(message)
+        if not send_telegram(message):
+            all_sent = False
 
-    # Registrar únicamente las novedades notificadas correctamente
-    # requeriría que send_telegram devolviera un resultado.
-    # Esta versión conserva el comportamiento de registro del bot.
-    for event in new_events:
-        known_ids.add(event["url"].rstrip("/"))
-        known_ids.add(event["id"])
+    if all_sent:
+        for event in new_events:
+            known_ids.add(event["url"])
+            known_ids.add(event["id"])
 
-    try:
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(
-                sorted(known_ids),
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
-
-        print("Historial actualizado correctamente.")
-
-    except OSError as e:
-        print(f"Error guardando historial: {e}")
+        save_history(history_file, known_ids)
+    else:
+        print(
+            "No se actualizó el historial porque al menos un mensaje "
+            "no pudo enviarse. Se reintentará en la próxima ejecución."
+        )
 
 
 if __name__ == "__main__":
