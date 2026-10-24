@@ -53,7 +53,7 @@ def classify_genre(title: str) -> str:
 
 
 def send_telegram(message: str) -> bool:
-    """Envía un mensaje y devuelve True solo si Telegram lo acepta."""
+    """Envía un mensaje y devuelve True si Telegram lo acepta."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("ERROR: Faltan credenciales de Telegram.")
         return False
@@ -90,6 +90,7 @@ def send_telegram(message: str) -> bool:
 
 def make_event(source: str, title: str, url: str) -> dict:
     normalized_url = url.rstrip("/")
+
     return {
         "id": normalized_url,
         "source": source,
@@ -114,8 +115,11 @@ def get_factor_metal():
 
             if (
                 "@" in text
-                and ("Bogotá" in text or "Bogota" in text
-                     or "Colombia" in text)
+                and (
+                    "Bogotá" in text
+                    or "Bogota" in text
+                    or "Colombia" in text
+                )
             ):
                 title = text.split("@")[0].strip()
                 link = (
@@ -194,10 +198,11 @@ def get_ticketmaster():
             if any(word in full_url.lower() for word in excluded):
                 continue
 
-            # Limitar la selección a enlaces de contenido/eventos.
             if not any(
                 word in full_url.lower()
-                for word in ["event", "evento", "concert", "concierto"]
+                for word in [
+                    "event", "evento", "concert", "concierto"
+                ]
             ):
                 continue
 
@@ -212,75 +217,119 @@ def get_ticketmaster():
 
 
 # 4. PÁRAMO PRESENTA
+# Usa Chromium para intentar leer eventos que cargan con JavaScript.
 def get_paramo_presenta():
     events = []
     url = "https://www.paramopresenta.com/eventos"
 
+    browser = None
+
     try:
-        response = requests.get(url, headers=HEADERS, timeout=25)
-        response.raise_for_status()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
 
-        # Ayuda a interpretar correctamente caracteres acentuados.
-        response.encoding = response.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for anchor in soup.find_all("a", href=True):
-            href = anchor["href"].strip()
-            full_url = urljoin(url, href)
-            normalized_url = full_url.rstrip("/")
-            parsed = urlparse(full_url)
-
-            # Aceptar únicamente páginas de eventos de Páramo.
-            if parsed.netloc.lower() not in (
-                "paramopresenta.com",
-                "www.paramopresenta.com"
-            ):
-                continue
-
-            if "/eventos/" not in parsed.path.lower():
-                continue
-
-            # Evitar que la página del listado se registre como evento.
-            if normalized_url == url.rstrip("/"):
-                continue
-
-            # Intentar obtener el título de la tarjeta del evento.
-            title = ""
-            for parent in anchor.parents:
-                if parent.name in ("article", "li", "section"):
-                    heading = parent.find(
-                        ["h1", "h2", "h3", "h4", "h5"]
-                    )
-                    if heading:
-                        title = heading.get_text(" ", strip=True)
-                        break
-
-            if not title:
-                title = anchor.get_text(" ", strip=True)
-
-            # Si el enlace tiene texto genérico, usar el slug de la URL.
-            generic_titles = {
-                "", "ver evento", "comprar entradas",
-                "más información", "ver más", "conoce más"
-            }
-
-            if title.casefold() in generic_titles:
-                slug = parsed.path.rstrip("/").split("/")[-1]
-                slug = re.sub(
-                    r"-tickets-[a-z0-9]+$", "", slug,
-                    flags=re.IGNORECASE
-                )
-                title = slug.replace("-", " ").replace("_", " ").title()
-
-            if len(title) < 3:
-                continue
-
-            events.append(
-                make_event("Páramo Presenta", title, normalized_url)
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"],
+                locale="es-CO"
             )
 
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            if response is not None:
+                print(
+                    "Páramo Presenta HTTP:",
+                    response.status
+                )
+
+            # Dar tiempo a que la página cargue los eventos.
+            page.wait_for_timeout(5000)
+
+            # Obtener enlaces y títulos de las tarjetas desde el DOM.
+            links = page.locator(
+                "a[href*='/eventos/']"
+            ).evaluate_all(
+                """anchors => anchors.map(a => {
+                    const card = a.closest(
+                        'article, li, [class*="event"], [class*="card"]'
+                    );
+
+                    const heading = card
+                        ? card.querySelector('h1,h2,h3,h4,h5')
+                        : null;
+
+                    return {
+                        href: a.href,
+                        text: (a.innerText || a.textContent || '').trim(),
+                        heading: heading
+                            ? heading.innerText.trim()
+                            : ''
+                    };
+                })"""
+            )
+
+            generic_titles = {
+                "", "ver evento", "comprar entradas",
+                "más información", "ver más", "conoce más",
+                "tickets", "comprar", "ver detalles"
+            }
+
+            for item in links:
+                full_url = urljoin(url, item.get("href", ""))
+                parsed = urlparse(full_url)
+                normalized_url = full_url.split("#")[0].split("?")[0].rstrip("/")
+
+                # Solo páginas de eventos del dominio oficial.
+                if parsed.netloc.lower() not in (
+                    "paramopresenta.com",
+                    "www.paramopresenta.com"
+                ):
+                    continue
+
+                if "/eventos/" not in parsed.path.lower():
+                    continue
+
+                title = (
+                    item.get("heading", "").strip()
+                    or item.get("text", "").strip()
+                )
+                title = " ".join(title.split())
+
+                # Evitar guardar enlaces sin título útil.
+                if title.casefold() in generic_titles:
+                    slug = parsed.path.rstrip("/").split("/")[-1]
+                    slug = re.sub(
+                        r"-tickets-[a-z0-9]+$",
+                        "",
+                        slug,
+                        flags=re.IGNORECASE
+                    )
+                    title = slug.replace("-", " ").replace(
+                        "_", " "
+                    ).title()
+
+                if len(title) < 3:
+                    continue
+
+                events.append(
+                    make_event(
+                        "Páramo Presenta",
+                        title,
+                        normalized_url
+                    )
+                )
+
+            browser.close()
+            browser = None
+
         # Eliminar duplicados por URL.
-        unique = {event["url"]: event for event in events}
+        unique = {
+            event["url"]: event
+            for event in events
+        }
         events = list(unique.values())
 
         print(
@@ -291,8 +340,21 @@ def get_paramo_presenta():
         for event in events:
             print(f"  - {event['title']}: {event['url']}")
 
+        if not events:
+            print(
+                "Páramo Presenta: no se encontraron enlaces de eventos. "
+                "La página puede requerir otra estrategia de extracción."
+            )
+
     except Exception as error:
         print(f"Error Páramo Presenta: {error}")
+
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     return events
 
@@ -306,7 +368,9 @@ def get_move_concerts():
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"]
+            )
 
             page.goto(
                 base_url,
@@ -374,7 +438,9 @@ def get_lemmyprods():
     try:
         response = requests.get(url, headers=HEADERS, timeout=25)
         response.raise_for_status()
-        response.encoding = response.apparent_encoding or "utf-8"
+        response.encoding = (
+            response.apparent_encoding or "utf-8"
+        )
         soup = BeautifulSoup(response.text, "html.parser")
 
         for anchor in soup.find_all("a", href=True):
@@ -400,7 +466,11 @@ def get_lemmyprods():
                 continue
 
             events.append(
-                make_event("Lemmy Productions", title, normalized_url)
+                make_event(
+                    "Lemmy Productions",
+                    title,
+                    normalized_url
+                )
             )
 
         unique = {event["url"]: event for event in events}
@@ -436,7 +506,9 @@ def load_history(filename: str) -> set:
 
     except (json.JSONDecodeError, OSError) as error:
         print(f"Error leyendo historial: {error}")
-        print("Se conserva el archivo y se inicia con historial vacío.")
+        print(
+            "Se conserva el archivo y se inicia con historial vacío."
+        )
 
     return set()
 
@@ -481,9 +553,16 @@ def build_messages(events: list) -> list:
         else:
             badge = "⚡ *[OTROS]*"
 
-        # Evitar caracteres que alteren el formato Markdown.
-        title = event["title"].replace("*", "").replace("_", "\\_")
-        source = event["source"].replace("*", "").replace("_", "\\_")
+        title = (
+            event["title"]
+            .replace("*", "")
+            .replace("_", "\\_")
+        )
+        source = (
+            event["source"]
+            .replace("*", "")
+            .replace("_", "\\_")
+        )
         url = event["url"]
 
         card = (
@@ -508,8 +587,8 @@ def main():
     history_file = "eventos_registrados.json"
     known_ids = load_history(history_file)
 
-    # Consultar todas las fuentes.
     raw_events = []
+
     sources = [
         get_factor_metal,
         get_tuboleta,
@@ -546,7 +625,7 @@ def main():
 
         unique_events[url] = event
 
-    # Detectar eventos no registrados previamente.
+    # Detectar eventos que no estaban registrados.
     new_events = []
 
     for url, event in unique_events.items():
@@ -564,7 +643,7 @@ def main():
 
     messages = build_messages(new_events)
 
-    # Registrar eventos solo si todas las notificaciones se enviaron.
+    # Registrar los eventos solo si todos los mensajes se enviaron.
     all_sent = True
 
     for message in messages:
