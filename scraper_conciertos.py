@@ -41,7 +41,12 @@ KEYWORDS_ROCK = [
     "caifanes", "the strokes", "placebo",
     "los fabulosos cadillacs", "def leppard", "soda stereo",
     "aterciopelados", "conociendo rusia", "maná", "mana",
-    "the rasmus", "hombres g", "hammerfall"
+    "the rasmus", "hombres g", "hammerfall",
+    "post-hardcore", "hardcore punk", "screamo", "emo",
+    "shoegaze", "new wave", "gothic rock", "industrial rock",
+    "garage rock", "psychedelic rock", "stoner rock",
+    "noise rock", "progressive rock", "prog rock", "post-rock",
+    "folk rock", "rockabilly", "crossover thrash"
 ]
 
 
@@ -770,8 +775,21 @@ def main():
 
     print(f"Total de elementos recopilados: {len(raw_events)}")
 
-    # Consultar fecha y hora en las páginas oficiales.
-    raw_events = enrich_event_dates(raw_events)
+    # Conservar solo metal, rock y géneros afines.
+    filtered_events = []
+    for event in raw_events:
+        category = classify_genre(event.get("title", ""))
+        if category in ("METAL", "ROCK"):
+            event["category"] = category
+            filtered_events.append(event)
+
+    print(
+        f"Eventos de rock/metal/alternativos: "
+        f"{len(filtered_events)}"
+    )
+
+    # Consultar fechas solo para los eventos filtrados.
+    raw_events = enrich_event_dates(filtered_events)
 
     # Normalizar y deduplicar por URL.
     unique_events = {}
