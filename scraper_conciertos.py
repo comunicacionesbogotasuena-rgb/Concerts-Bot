@@ -4,7 +4,7 @@ import os
 import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urldefrag
 from playwright.sync_api import sync_playwright
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -217,16 +217,24 @@ def get_ticketmaster():
 
 
 # 4. PÁRAMO PRESENTA
-# Usa Chromium para intentar leer eventos que cargan con JavaScript.
+# Usa Chromium para páginas que cargan contenido con JavaScript.
 def get_paramo_presenta():
     events = []
     url = "https://www.paramopresenta.com/eventos"
-
     browser = None
+
+    generic_titles = {
+        "", "ver evento", "comprar entradas",
+        "más información", "ver más", "conoce más",
+        "tickets", "comprar", "ver detalles"
+    }
 
     try:
         with sync_playwright() as playwright:
+            print("DEBUG PARAMO: iniciando Playwright")
+
             browser = playwright.chromium.launch(headless=True)
+            print("DEBUG PARAMO: Chromium iniciado correctamente")
 
             page = browser.new_page(
                 user_agent=HEADERS["User-Agent"],
@@ -240,23 +248,22 @@ def get_paramo_presenta():
             )
 
             if response is not None:
-                print(
-                    "Páramo Presenta HTTP:",
-                    response.status
-                )
+                print("DEBUG PARAMO: HTTP =", response.status)
+            else:
+                print("DEBUG PARAMO: no se recibió respuesta HTTP")
 
-            # Dar tiempo a que la página cargue los eventos.
+            print("DEBUG PARAMO: URL final =", page.url)
+            print("DEBUG PARAMO: título =", page.title())
+
+            # Esperar el renderizado de contenido dinámico.
             page.wait_for_timeout(5000)
 
-            # Obtener enlaces y títulos de las tarjetas desde el DOM.
-            links = page.locator(
-                "a[href*='/eventos/']"
-            ).evaluate_all(
+            # Recoger enlaces y títulos del DOM.
+            links = page.locator("a[href]").evaluate_all(
                 """anchors => anchors.map(a => {
                     const card = a.closest(
                         'article, li, [class*="event"], [class*="card"]'
                     );
-
                     const heading = card
                         ? card.querySelector('h1,h2,h3,h4,h5')
                         : null;
@@ -271,26 +278,35 @@ def get_paramo_presenta():
                 })"""
             )
 
-            generic_titles = {
-                "", "ver evento", "comprar entradas",
-                "más información", "ver más", "conoce más",
-                "tickets", "comprar", "ver detalles"
-            }
+            print(
+                "DEBUG PARAMO: total de enlaces del DOM =",
+                len(links)
+            )
 
             for item in links:
-                full_url = urljoin(url, item.get("href", ""))
-                parsed = urlparse(full_url)
-                normalized_url = full_url.split("#")[0].split("?")[0].rstrip("/")
+                full_url = item.get("href", "").strip()
+                if not full_url:
+                    continue
 
-                # Solo páginas de eventos del dominio oficial.
-                if parsed.netloc.lower() not in (
+                parsed = urlparse(full_url)
+                host = parsed.netloc.lower()
+                path = parsed.path.lower()
+
+                # Solo el dominio oficial.
+                if host not in (
                     "paramopresenta.com",
                     "www.paramopresenta.com"
                 ):
                     continue
 
-                if "/eventos/" not in parsed.path.lower():
+                # Solo páginas individuales de eventos.
+                if not re.match(r"^/eventos/[^/]+/?$", path):
                     continue
+
+                # Quitar fragmentos, parámetros y barra final.
+                normalized_url = (
+                    parsed.scheme + "://" + parsed.netloc + parsed.path
+                ).rstrip("/")
 
                 title = (
                     item.get("heading", "").strip()
@@ -298,7 +314,7 @@ def get_paramo_presenta():
                 )
                 title = " ".join(title.split())
 
-                # Evitar guardar enlaces sin título útil.
+                # Si el texto es genérico, derivar título del slug.
                 if title.casefold() in generic_titles:
                     slug = parsed.path.rstrip("/").split("/")[-1]
                     slug = re.sub(
@@ -307,9 +323,11 @@ def get_paramo_presenta():
                         slug,
                         flags=re.IGNORECASE
                     )
-                    title = slug.replace("-", " ").replace(
-                        "_", " "
-                    ).title()
+                    title = (
+                        slug.replace("-", " ")
+                        .replace("_", " ")
+                        .title()
+                    )
 
                 if len(title) < 3:
                     continue
@@ -325,16 +343,31 @@ def get_paramo_presenta():
             browser.close()
             browser = None
 
-        # Eliminar duplicados por URL.
-        unique = {
-            event["url"]: event
-            for event in events
-        }
+        # Deduplicar por URL normalizada.
+        unique = {}
+        for event in events:
+            unique.setdefault(event["url"], event)
         events = list(unique.values())
 
         print(
-            f"Páramo Presenta: {len(events)} "
-            "enlaces candidatos encontrados"
+            "Páramo Presenta:",
+            len(events),
+            "eventos encontrados"
+        )
+
+        target_url = (
+            "https://www.paramopresenta.com/"
+            "eventos/def-leppard-tickets-ae3791"
+        ).rstrip("/")
+
+        found_def_leppard = any(
+            event["url"].lower() == target_url.lower()
+            for event in events
+        )
+
+        print(
+            "DEBUG PARAMO: enlace de Def Leppard encontrado =",
+            found_def_leppard
         )
 
         for event in events:
@@ -342,8 +375,8 @@ def get_paramo_presenta():
 
         if not events:
             print(
-                "Páramo Presenta: no se encontraron enlaces de eventos. "
-                "La página puede requerir otra estrategia de extracción."
+                "DEBUG PARAMO: no se encontraron eventos. "
+                "Revisar el HTML y el contenido dinámico."
             )
 
     except Exception as error:
@@ -625,7 +658,7 @@ def main():
 
         unique_events[url] = event
 
-    # Detectar eventos que no estaban registrados.
+    # Detectar eventos nuevos.
     new_events = []
 
     for url, event in unique_events.items():
