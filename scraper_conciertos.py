@@ -106,8 +106,92 @@ def make_event(source: str, title: str, url: str) -> dict:
         "id": normalized_url,
         "source": source,
         "title": clean_title,
-        "url": normalized_url
+        "url": normalized_url,
+        "date": None,
+        "time": None
     }
+
+
+
+def extract_event_datetime(url: str) -> dict:
+    """Busca fecha y hora en etiquetas HTML y metadatos del evento."""
+    result = {"date": None, "time": None}
+
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Páramo usa etiquetas como:
+        # <time dateTime="2026-11-02T00:00:00.000Z">nov. 02 2026</time>
+        for tag in soup.find_all("time"):
+            value = tag.get("datetime") or tag.get("dateTime")
+            if not value:
+                continue
+
+            match = re.search(
+                r"(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?",
+                value
+            )
+            if match:
+                result["date"] = match.group(1)
+
+                # No interpretar medianoche UTC como hora del concierto.
+                if match.group(2) and not value.endswith("Z"):
+                    result["time"] = match.group(2)
+
+                return result
+
+        # Busca también fechas en datos estructurados JSON-LD.
+        for script in soup.find_all(
+            "script", type="application/ld+json"
+        ):
+            try:
+                data = json.loads(
+                    script.string or script.get_text()
+                )
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            pending = data if isinstance(data, list) else [data]
+
+            while pending:
+                item = pending.pop(0)
+                if not isinstance(item, dict):
+                    continue
+
+                for key in ("@graph", "itemListElement"):
+                    nested = item.get(key)
+                    if isinstance(nested, list):
+                        pending.extend(nested)
+
+                value = item.get("startDate") or item.get("start_date")
+                if isinstance(value, str):
+                    match = re.search(
+                        r"(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?",
+                        value
+                    )
+                    if match:
+                        result["date"] = match.group(1)
+                        if match.group(2) and not value.endswith("Z"):
+                            result["time"] = match.group(2)
+                        return result
+
+    except Exception as error:
+        print(f"Aviso: no se pudo leer fecha de {url}: {error}")
+
+    return result
+
+def enrich_event_dates(events: list) -> list:
+    """Busca fechas sin inventarlas; deja vacíos los datos no encontrados."""
+    for index, event in enumerate(events, start=1):
+        if event.get("date"):
+            continue
+        print(f"Buscando fecha ({index}/{len(events)}): {event.get('title', '')}")
+        details = extract_event_datetime(event["url"])
+        event["date"] = details["date"]
+        event["time"] = details["time"]
+    return events
 
 
 # 1. FACTOR METAL
@@ -636,8 +720,14 @@ def build_messages(events: list) -> list:
         )
         url = event["url"]
 
+        event_date = event.get("date")
+        event_time = event.get("time")
+        date_line = f"📅 *Fecha:* {event_date}\n" if event_date else "📅 *Fecha:* Por confirmar\n"
+        time_line = f"🕒 *Hora:* {event_time}\n" if event_time else ""
         card = (
             f"{badge} *{title}*\n"
+            f"{date_line}"
+            f"{time_line}"
             f"🏢 *Fuente:* {source}\n"
             f"🔗 [Ver evento]({url})\n\n"
         )
@@ -679,6 +769,9 @@ def main():
             )
 
     print(f"Total de elementos recopilados: {len(raw_events)}")
+
+    # Consultar fecha y hora en las páginas oficiales.
+    raw_events = enrich_event_dates(raw_events)
 
     # Normalizar y deduplicar por URL.
     unique_events = {}
