@@ -4,8 +4,15 @@ import os
 import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, urldefrag
+from urllib.parse import (
+    urljoin,
+    urlparse,
+    urldefrag,
+    unquote,
+)
+from html import unescape
 from playwright.sync_api import sync_playwright
+
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -59,7 +66,7 @@ def send_telegram(message: str) -> bool:
         return False
 
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
@@ -89,12 +96,16 @@ def send_telegram(message: str) -> bool:
 
 
 def make_event(source: str, title: str, url: str) -> dict:
-    normalized_url = url.rstrip("/")
+    """Normaliza títulos y URLs de los eventos."""
+    normalized_url = urldefrag(url.strip())[0].rstrip("/")
+    clean_title = " ".join(
+        unquote(unescape(title)).split()
+    )
 
     return {
         "id": normalized_url,
         "source": source,
-        "title": title.strip(),
+        "title": clean_title,
         "url": normalized_url
     }
 
@@ -159,7 +170,9 @@ def get_tuboleta():
             if "tuboleta.com" not in host:
                 continue
 
-            events.append(make_event("Tuboleta", title, full_url))
+            events.append(
+                make_event("Tuboleta", title, full_url)
+            )
 
     except Exception as error:
         print(f"Error Tuboleta: {error}")
@@ -285,6 +298,7 @@ def get_paramo_presenta():
 
             for item in links:
                 full_url = item.get("href", "").strip()
+
                 if not full_url:
                     continue
 
@@ -303,30 +317,48 @@ def get_paramo_presenta():
                 if not re.match(r"^/eventos/[^/]+/?$", path):
                     continue
 
-                # Quitar fragmentos, parámetros y barra final.
+                # Normalizar URL: sin fragmentos, parámetros ni
+                # barra final.
                 normalized_url = (
-                    parsed.scheme + "://" + parsed.netloc + parsed.path
+                    parsed.scheme
+                    + "://"
+                    + parsed.netloc
+                    + parsed.path
                 ).rstrip("/")
 
                 title = (
                     item.get("heading", "").strip()
                     or item.get("text", "").strip()
                 )
-                title = " ".join(title.split())
+                title = " ".join(
+                    unquote(unescape(title)).split()
+                )
 
-                # Si el texto es genérico, derivar título del slug.
+                # Si el texto del enlace es genérico, obtener el
+                # nombre del evento a partir del slug de la URL.
                 if title.casefold() in generic_titles:
                     slug = parsed.path.rstrip("/").split("/")[-1]
+                    slug = unquote(slug)
+
                     slug = re.sub(
                         r"-tickets-[a-z0-9]+$",
                         "",
                         slug,
                         flags=re.IGNORECASE
                     )
+
                     title = (
                         slug.replace("-", " ")
                         .replace("_", " ")
                         .title()
+                    )
+
+                    # Corregir capitalización habitual de nombres.
+                    title = re.sub(
+                        r"autéNticos",
+                        "auténticos",
+                        title,
+                        flags=re.IGNORECASE
                     )
 
                 if len(title) < 3:
@@ -345,8 +377,10 @@ def get_paramo_presenta():
 
         # Deduplicar por URL normalizada.
         unique = {}
+
         for event in events:
             unique.setdefault(event["url"], event)
+
         events = list(unique.values())
 
         print(
@@ -506,7 +540,10 @@ def get_lemmyprods():
                 )
             )
 
-        unique = {event["url"]: event for event in events}
+        unique = {
+            event["url"]: event
+            for event in events
+        }
         events = list(unique.values())
 
         print(
@@ -566,6 +603,7 @@ def save_history(filename: str, known_ids: set) -> bool:
 
 def build_messages(events: list) -> list:
     priority = {"METAL": 0, "ROCK": 1, "OTROS": 2}
+
     events.sort(
         key=lambda event: priority.get(event["category"], 2)
     )
