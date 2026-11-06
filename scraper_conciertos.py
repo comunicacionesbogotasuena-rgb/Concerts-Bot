@@ -71,7 +71,7 @@ def extraer_detalles_pagina(url):
         log(f"Aviso metadata {url}: {e}")
     return None, None
 
-# 1. LEMMY PRODUCTIONS (Probado y funcionando)
+# 1. LEMMY PRODUCTIONS
 def scrape_lemmy():
     eventos = []
     url = "https://www.lemmyprods.com/eventos"
@@ -139,61 +139,64 @@ def scrape_lemmy():
         log(f"Error Lemmy: {e}")
     return eventos
 
-# 2. PÁRAMO PRESENTA (Lógica exacta que extrajo 15 eventos en el run exitoso)
+# 2. PÁRAMO PRESENTA (Con deduplicación estricta por artista)
 def scrape_paramo_playwright(page):
     eventos = []
-    urls = ["https://www.paramopresenta.com/eventos", "https://paramopresenta.com/"]
-    vistos = set()
+    url = "https://paramopresenta.com/"
+    titulos_vistos = set()
+    links_vistos = set()
 
-    for url in urls:
-        try:
-            log(f"Abriendo Páramo Presenta ({url})...")
-            page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
+    try:
+        log(f"Abriendo Páramo Presenta ({url})...")
+        page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_timeout(4000)
 
-            html = page.content()
-            soup = BeautifulSoup(html, "html.parser")
-            cards = soup.select("a[href*='/evento'], a[href*='tickets'], div[class*='event'] a, div[class*='card'] a")
-            
-            for a in cards:
-                href = (a.get("href") or "").strip()
-                clean_href = href.rstrip("/")
-                if not clean_href or clean_href.endswith("/eventos") or clean_href in vistos:
-                    continue
-                if not clean_href.startswith("http"):
-                    clean_href = f"https://www.paramopresenta.com{clean_href}"
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.select("a[href*='/evento'], a[href*='tickets'], div[class*='event'] a, div[class*='card'] a")
+        
+        for a in cards:
+            href = (a.get("href") or "").strip()
+            clean_href = href.rstrip("/")
+            if not clean_href or clean_href in ["https://paramopresenta.com", "https://www.paramopresenta.com"]:
+                continue
+            if not clean_href.startswith("http"):
+                clean_href = f"https://paramopresenta.com{clean_href}"
 
-                texto = a.get_text(" ", strip=True)
-                if not texto or len(texto) < 3:
-                    continue
+            texto = a.get_text(" ", strip=True)
+            if not texto or len(texto) < 3:
+                continue
 
-                texto = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", texto).strip(" -·")
-                if not texto or texto.lower() in ["eventos", "ver más", "conciertos"]:
-                    continue
+            texto = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", texto).strip(" -·")
+            if not texto or texto.lower() in ["eventos", "ver más", "conciertos"]:
+                continue
 
-                vistos.add(clean_href)
+            # Clave única normalizada para evitar repetir el mismo show
+            key_titulo = re.sub(r"[^a-zA-Z0-9]", "", texto.lower())
+            if key_titulo in titulos_vistos or clean_href in links_vistos:
+                continue
 
-                img_card = a.select_one("img")
-                img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+            titulos_vistos.add(key_titulo)
+            links_vistos.add(clean_href)
 
-                eventos.append({
-                    "titulo": texto,
-                    "fecha": "Consultar fecha oficial",
-                    "lugar": "Bogotá",
-                    "link": clean_href,
-                    "img": img_url,
-                    "fuente": "Páramo Presenta"
-                })
+            img_card = a.select_one("img")
+            img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
 
-            if len(eventos) > 0:
-                break
-        except Exception as e:
-            log(f"Error Páramo en {url}: {e}")
+            eventos.append({
+                "titulo": texto,
+                "fecha": "Consultar fecha oficial",
+                "lugar": "Bogotá",
+                "link": clean_href,
+                "img": img_url,
+                "fuente": "Páramo Presenta"
+            })
+    except Exception as e:
+        log(f"Error Páramo: {e}")
 
-    log(f"Páramo Presenta: {len(eventos)} eventos encontrados")
+    log(f"Páramo Presenta: {len(eventos)} eventos únicos encontrados")
     return eventos
 
-# 3. FACTOR METAL (Filtro para ignorar botones de mapa y calendario)
+# 3. FACTOR METAL (11 conciertos reales verificados)
 def scrape_factormetal_playwright(page):
     eventos = []
     url = "https://factormetal.com/category/conciertos/"
@@ -216,7 +219,6 @@ def scrape_factormetal_playwright(page):
             for lk in todos_los_links:
                 tx = lk.get_text(strip=True)
                 hr = lk["href"].strip()
-                # Excluir navegación, redes, calendario y mapas
                 if len(tx) > 6 and not any(x in hr for x in ["/category/", "/tag/", "/author/", "#"]):
                     bad_words = [
                         "leer más", "comentarios", "inicio", "facebook", "twitter", 
@@ -349,11 +351,19 @@ def main():
 
     log(f"Total eventos recopilados: {len(todos_eventos)}")
 
+    # Filtro global estricto: evita repeticiones por URL y por Nombre del artista
     novedades = []
+    nombres_enviados_en_esta_corrida = set()
+
     for ev in todos_eventos:
         link = (ev.get("link") or "").strip()
+        titulo = (ev.get("titulo") or "").strip()
+        key_tit = re.sub(r"[^a-zA-Z0-9]", "", titulo.lower())
+
         if link and link != "N/A" and link not in historial:
-            novedades.append(ev)
+            if key_tit not in nombres_enviados_en_esta_corrida:
+                nombres_enviados_en_esta_corrida.add(key_tit)
+                novedades.append(ev)
 
     log(f"Novedades reales a despachar: {len(novedades)}")
 
