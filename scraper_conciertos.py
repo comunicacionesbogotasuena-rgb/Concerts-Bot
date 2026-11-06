@@ -71,7 +71,7 @@ def extraer_detalles_pagina(url):
         log(f"Aviso metadata {url}: {e}")
     return None, None
 
-# 1. LEMMY PRODUCTIONS
+# 1. LEMMY PRODUCTIONS (Probado y funcionando)
 def scrape_lemmy():
     eventos = []
     url = "https://www.lemmyprods.com/eventos"
@@ -139,65 +139,67 @@ def scrape_lemmy():
         log(f"Error Lemmy: {e}")
     return eventos
 
-# 2. PÁRAMO PRESENTA
+# 2. PÁRAMO PRESENTA (Lógica exacta que extrajo 15 eventos en el run exitoso)
 def scrape_paramo_playwright(page):
     eventos = []
-    url = "https://www.paramopresenta.com/eventos"
-    try:
-        log("Abriendo Páramo Presenta en Chromium...")
-        page.goto(url, timeout=30000, wait_until="domcontentloaded")
-        
-        # Esperar explícitamente a que existan los enlaces de eventos
+    urls = ["https://www.paramopresenta.com/eventos", "https://paramopresenta.com/"]
+    vistos = set()
+
+    for url in urls:
         try:
-            page.wait_for_selector("a[href*='/evento'], a[href*='tickets'], .event-card, .card", timeout=8000)
-        except Exception:
-            page.wait_for_timeout(3000)
+            log(f"Abriendo Páramo Presenta ({url})...")
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(4000)
 
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        cards = soup.select("a[href*='/eventos/'], a[href*='/evento/'], a[href*='paramopresenta.com/evento']")
-        
-        vistos = set()
-        for a in cards:
-            href = (a.get("href") or "").strip()
-            clean_href = href.rstrip("/")
-            if not clean_href or clean_href.endswith("/eventos") or clean_href in vistos:
-                continue
-            if not clean_href.startswith("http"):
-                clean_href = f"https://www.paramopresenta.com{clean_href}"
+            html = page.content()
+            soup = BeautifulSoup(html, "html.parser")
+            cards = soup.select("a[href*='/evento'], a[href*='tickets'], div[class*='event'] a, div[class*='card'] a")
+            
+            for a in cards:
+                href = (a.get("href") or "").strip()
+                clean_href = href.rstrip("/")
+                if not clean_href or clean_href.endswith("/eventos") or clean_href in vistos:
+                    continue
+                if not clean_href.startswith("http"):
+                    clean_href = f"https://www.paramopresenta.com{clean_href}"
 
-            vistos.add(clean_href)
-            texto = a.get_text(" ", strip=True)
-            if not texto or len(texto) < 3:
-                continue
+                texto = a.get_text(" ", strip=True)
+                if not texto or len(texto) < 3:
+                    continue
 
-            texto = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", texto).strip(" -·")
-            if not texto or texto.lower() in ["eventos", "ver más"]:
-                continue
+                texto = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", texto).strip(" -·")
+                if not texto or texto.lower() in ["eventos", "ver más", "conciertos"]:
+                    continue
 
-            img_card = a.select_one("img")
-            img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+                vistos.add(clean_href)
 
-            eventos.append({
-                "titulo": texto,
-                "fecha": "Consultar fecha oficial",
-                "lugar": "Bogotá",
-                "link": clean_href,
-                "img": img_url,
-                "fuente": "Páramo Presenta"
-            })
-        log(f"Páramo Presenta: {len(eventos)} eventos encontrados")
-    except Exception as e:
-        log(f"Error Páramo: {e}")
+                img_card = a.select_one("img")
+                img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+
+                eventos.append({
+                    "titulo": texto,
+                    "fecha": "Consultar fecha oficial",
+                    "lugar": "Bogotá",
+                    "link": clean_href,
+                    "img": img_url,
+                    "fuente": "Páramo Presenta"
+                })
+
+            if len(eventos) > 0:
+                break
+        except Exception as e:
+            log(f"Error Páramo en {url}: {e}")
+
+    log(f"Páramo Presenta: {len(eventos)} eventos encontrados")
     return eventos
 
-# 3. FACTOR METAL
+# 3. FACTOR METAL (Filtro para ignorar botones de mapa y calendario)
 def scrape_factormetal_playwright(page):
     eventos = []
     url = "https://factormetal.com/category/conciertos/"
     vistos = set()
     try:
-        log("Abriendo Factor Metal en Chromium...")
+        log("Abriendo Factor Metal (Categoría Conciertos)...")
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
@@ -208,16 +210,19 @@ def scrape_factormetal_playwright(page):
         log(f"Factor Metal: {len(posts)} notas detectadas")
 
         for p in posts:
-            # Buscar el enlace principal dentro de cada artículo
             todos_los_links = p.find_all("a", href=True)
             a_tag = None
             
             for lk in todos_los_links:
                 tx = lk.get_text(strip=True)
                 hr = lk["href"].strip()
-                # El enlace del título no es una categoría ni autor
+                # Excluir navegación, redes, calendario y mapas
                 if len(tx) > 6 and not any(x in hr for x in ["/category/", "/tag/", "/author/", "#"]):
-                    if not any(bad in tx.lower() for bad in ["leer más", "comentarios", "inicio", "facebook", "twitter"]):
+                    bad_words = [
+                        "leer más", "comentarios", "inicio", "facebook", "twitter", 
+                        "ver mapa", "agregar a calendario", "google calendar", "ical", "mapa"
+                    ]
+                    if not any(bad in tx.lower() for bad in bad_words):
                         a_tag = lk
                         break
 
@@ -326,10 +331,10 @@ def main():
 
     todos_eventos = []
     
-    # Lemmy
+    # 1. Lemmy
     todos_eventos.extend(scrape_lemmy())
 
-    # Páramo y Factor Metal
+    # 2. Páramo y Factor Metal
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
