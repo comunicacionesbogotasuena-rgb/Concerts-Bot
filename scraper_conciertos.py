@@ -22,8 +22,7 @@ HEADERS = {
 MESES = {
     "ene": "Enero", "feb": "Febrero", "mar": "Marzo", "abr": "Abril",
     "may": "Mayo", "jun": "Junio", "jul": "Julio", "ago": "Agosto",
-    "sep": "Septiembre", "oct": "Octubre", "nov": "Noviembre", "dic": "Diciembre",
-    "jan": "Enero", "apr": "Abril", "aug": "Agosto", "dec": "Diciembre"
+    "sep": "Septiembre", "oct": "Octubre", "nov": "Noviembre", "dic": "Diciembre"
 }
 
 def load_registered_events():
@@ -41,7 +40,7 @@ def save_registered_events(events):
     try:
         with open(JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(events, f, indent=2, ensure_ascii=False)
-        log("Historial guardado en eventos_registrados.json")
+        log("Historial persistido correctamente en eventos_registrados.json")
     except Exception as e:
         log(f"Error guardando JSON: {e}")
 
@@ -72,7 +71,9 @@ def extraer_detalles_pagina(url):
         log(f"Aviso metadata {url}: {e}")
     return None, None
 
-# 1. LEMMY PRODUCTIONS (Impecable)
+# -------------------------------------------------------------
+# 1. LEMMY PRODUCTIONS (Estructura comprobada de 14 conciertos)
+# -------------------------------------------------------------
 def scrape_lemmy():
     eventos = []
     url = "https://www.lemmyprods.com/eventos"
@@ -137,69 +138,59 @@ def scrape_lemmy():
                 "fuente": "Lemmy Productions"
             })
     except Exception as e:
-        log(f"Error Lemmy: {e}")
+        log(f"Error procesando Lemmy: {e}")
     return eventos
 
-# 2. PÁRAMO PRESENTA (Sin repeticiones y con extracción de fecha)
+# -------------------------------------------------------------
+# 2. PÁRAMO PRESENTA (Home viva + Deduplicación estricta por artista)
+# -------------------------------------------------------------
 def scrape_paramo_playwright(page):
     eventos = []
-    url = "https://www.paramopresenta.com/eventos"
-    titulos_vistos = set()
+    url = "https://paramopresenta.com/"
+    nombres_vistos = set()
     links_vistos = set()
 
     try:
-        log("Abriendo Páramo Presenta (/eventos)...")
+        log("Abriendo Páramo Presenta (Home)...")
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
         page.wait_for_timeout(4000)
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
         
-        # En Páramo cada concierto es un bloque card o enlace con /evento/
-        cards = soup.select("a[href*='/evento/'], a[href*='paramopresenta.com/evento/']")
+        cards = soup.select("a[href*='/evento'], a[href*='tickets'], div[class*='event'] a, div[class*='card'] a")
         
         for a in cards:
             href = (a.get("href") or "").strip()
             clean_href = href.rstrip("/")
-            if not clean_href or clean_href.endswith("/eventos") or clean_href in links_vistos:
+            if not clean_href or clean_href in ["https://paramopresenta.com", "https://www.paramopresenta.com"] or clean_href in links_vistos:
                 continue
             if not clean_href.startswith("http"):
-                clean_href = f"https://www.paramopresenta.com{clean_href}"
+                clean_href = f"https://paramopresenta.com{clean_href}"
 
-            # Extraer todo el texto dentro de la tarjeta
-            texto_completo = a.get_text("\n", strip=True)
-            lineas = [l.strip() for l in texto_completo.split("\n") if l.strip()]
-            
-            if not lineas:
+            texto = a.get_text(" ", strip=True)
+            if not texto or len(texto) < 3:
                 continue
 
-            # El título suele ser la primera línea relevante
-            titulo = lineas[0]
-            titulo = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", titulo).strip(" -·")
-            if not titulo or len(titulo) < 3 or titulo.lower() in ["eventos", "ver más", "conciertos"]:
+            # Limpiar etiquetas visuales
+            texto = re.sub(r"(?i)\b(ver evento|comprar|comprar boletas|entradas|tickets)\b", "", texto).strip(" -·")
+            if not texto or texto.lower() in ["eventos", "ver más", "conciertos"]:
                 continue
 
-            # Normalizar para deduplicar shows idénticos
-            key_tit = re.sub(r"[^a-zA-Z0-9]", "", titulo.lower())
-            if key_tit in titulos_vistos:
+            # Clave única normalizada para que NUNCA repita el mismo artista
+            key_artista = re.sub(r"[^a-zA-Z0-9]", "", texto.lower())
+            if key_artista in nombres_vistos:
                 continue
 
-            titulos_vistos.add(key_tit)
+            nombres_vistos.add(key_artista)
             links_vistos.add(clean_href)
-
-            # Intentar buscar fecha dentro del texto de la card
-            fecha = "Bogotá (Ver enlace oficial)"
-            for linea in lineas[1:]:
-                if re.search(r"\b(\d{1,2}\s+de\s+[a-z]+|\d{1,2}\s+[a-z]{3}|\d{1,2}/\d{1,2})\b", linea, re.IGNORECASE):
-                    fecha = linea
-                    break
 
             img_card = a.select_one("img")
             img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
 
             eventos.append({
-                "titulo": titulo,
-                "fecha": fecha,
+                "titulo": texto,
+                "fecha": "Consultar fecha oficial",
                 "lugar": "Bogotá",
                 "link": clean_href,
                 "img": img_url,
@@ -211,11 +202,14 @@ def scrape_paramo_playwright(page):
     log(f"Páramo Presenta: {len(eventos)} eventos únicos encontrados")
     return eventos
 
-# 3. FACTOR METAL (Con fecha real extraída del artículo)
+# -------------------------------------------------------------
+# 3. FACTOR METAL (Categoría Conciertos + Filtro anti-widgets + Fecha de publicación)
+# -------------------------------------------------------------
 def scrape_factormetal_playwright(page):
     eventos = []
     url = "https://factormetal.com/category/conciertos/"
     vistos = set()
+
     try:
         log("Abriendo Factor Metal (Categoría Conciertos)...")
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
@@ -228,7 +222,7 @@ def scrape_factormetal_playwright(page):
         log(f"Factor Metal: {len(posts)} notas detectadas")
 
         for p in posts:
-            # Buscar el enlace del título en h1, h2, h3 o entry-title
+            # Buscar el titular principal en las etiquetas estándar de WordPress
             a_tag = p.select_one("h2 a, h3 a, h1 a, .entry-title a, a[rel='bookmark']")
             if not a_tag:
                 continue
@@ -241,24 +235,25 @@ def scrape_factormetal_playwright(page):
             if not titulo or len(titulo) < 6:
                 continue
 
-            # Descartar botones y widgets
-            bad_words = ["ver mapa", "agregar a calendario", "google calendar", "inicio", "facebook", "twitter", "contacto"]
+            # Filtro estricto para evitar botones de mapas, calendarios o navegación
+            bad_words = [
+                "ver mapa", "agregar a calendario", "google calendar", "ical", 
+                "inicio", "contacto", "política", "privacidad", "facebook", "twitter"
+            ]
             if any(bad in titulo.lower() for bad in bad_words):
                 continue
 
             vistos.add(link)
 
-            # Extraer fecha real de WordPress
+            # Extraer la fecha real de publicación de la noticia
             time_tag = p.select_one("time, .entry-date, .published, span.date")
             fecha = "N/A"
             if time_tag:
                 fecha = time_tag.get_text(strip=True)
             else:
-                # Buscar patrón de fecha en el texto del post
-                text_post = p.get_text(" ", strip=True)
-                f_match = re.search(r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})", text_post)
-                if f_match:
-                    fecha = f_match.group(1)
+                match_f = re.search(r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})", p.get_text(" ", strip=True))
+                if match_f:
+                    fecha = match_f.group(1)
 
             img_tag = p.select_one("img")
             img_url = img_tag.get("src").strip() if (img_tag and img_tag.get("src")) else None
@@ -271,13 +266,15 @@ def scrape_factormetal_playwright(page):
                 "img": img_url,
                 "fuente": "Factor Metal"
             })
-
-        log(f"Factor Metal: {len(eventos)} conciertos encontrados")
     except Exception as e:
         log(f"Error Factor Metal: {e}")
+
+    log(f"Factor Metal: {len(eventos)} conciertos encontrados")
     return eventos
 
-# 4. ENVÍO A TELEGRAM
+# -------------------------------------------------------------
+# 4. DISPATCHER A TELEGRAM (Rate limit seguro + Manejo de errores)
+# -------------------------------------------------------------
 def notificar_telegram(evento):
     titulo = evento.get("titulo") or "N/A"
     fecha = evento.get("fecha") or "N/A"
@@ -286,12 +283,12 @@ def notificar_telegram(evento):
     link = evento.get("link") or "N/A"
     img_url = evento.get("img")
 
-    # Si la fecha o el flyer vienen vacíos, intentamos raspar la URL interna del evento
-    if (not img_url or fecha in ["N/A", "Bogotá (Ver enlace oficial)"]) and link != "N/A":
+    # Enriquecer detalles si falta el afiche o la fecha
+    if (not img_url or fecha in ["N/A", "Consultar fecha oficial"]) and link != "N/A":
         flyer_det, fecha_det = extraer_detalles_pagina(link)
         if not img_url and flyer_det:
             img_url = flyer_det
-        if fecha in ["N/A", "Bogotá (Ver enlace oficial)"] and fecha_det:
+        if fecha in ["N/A", "Consultar fecha oficial"] and fecha_det:
             fecha = fecha_det
 
     texto = (
@@ -303,6 +300,7 @@ def notificar_telegram(evento):
         f"🎟️ <b>Boletería / Info:</b> {link}"
     )
 
+    # Intento 1: Envío con imagen
     if img_url and isinstance(img_url, str) and img_url.startswith("http"):
         try:
             url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -318,8 +316,9 @@ def notificar_telegram(evento):
                 return True
             log(f"Aviso foto HTTP {resp.status_code}. Pasando a texto plano...")
         except Exception as e:
-            log(f"Excepción foto: {e}. Pasando a texto plano...")
+            log(f"Excepción en envío de foto: {e}. Pasando a texto plano...")
 
+    # Intento 2: Respaldo garantizado en texto HTML
     try:
         url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
@@ -335,25 +334,28 @@ def notificar_telegram(evento):
         log(f"❌ Error Telegram ({resp.status_code}): {resp.text}")
         return False
     except Exception as e:
-        log(f"❌ Excepción mensaje: {e}")
+        log(f"❌ Error de red en sendMessage: {e}")
         return False
 
+# -------------------------------------------------------------
+# 5. CONTROL PRINCIPAL
+# -------------------------------------------------------------
 def main():
     log("=== INICIANDO EJECUCIÓN DEL SCRAPER ===")
     
     if not BOT_TOKEN or not CHAT_ID:
-        log("ERROR CRÍTICO: Credenciales de Telegram faltantes.")
+        log("ERROR CRÍTICO: Variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID vacías.")
         return
 
     historial = load_registered_events()
-    log(f"Historial cargado: {len(historial)} URLs registradas.")
+    log(f"Historial inicial: {len(historial)} URLs registradas.")
 
     todos_eventos = []
     
     # 1. Lemmy
     todos_eventos.extend(scrape_lemmy())
 
-    # 2. Páramo y Factor Metal
+    # 2. Páramo y Factor Metal con navegador Chromium
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -364,13 +366,13 @@ def main():
             
             browser.close()
     except Exception as e:
-        log(f"Error en sesión Playwright: {e}")
+        log(f"Error general en Playwright: {e}")
 
     log(f"Total eventos recopilados: {len(todos_eventos)}")
 
-    # Filtro global estricto: evita repeticiones por URL y por Nombre del artista
+    # Deduplicación global estricta por URL y por Nombre del Show
     novedades = []
-    nombres_enviados_en_esta_corrida = set()
+    nombres_enviados = set()
 
     for ev in todos_eventos:
         link = (ev.get("link") or "").strip()
@@ -378,8 +380,8 @@ def main():
         key_tit = re.sub(r"[^a-zA-Z0-9]", "", titulo.lower())
 
         if link and link != "N/A" and link not in historial:
-            if key_tit not in nombres_enviados_en_esta_corrida:
-                nombres_enviados_en_esta_corrida.add(key_tit)
+            if key_tit not in nombres_enviados:
+                nombres_enviados.add(key_tit)
                 novedades.append(ev)
 
     log(f"Novedades reales a despachar: {len(novedades)}")
@@ -394,9 +396,10 @@ def main():
         if ok:
             historial.append(n["link"].strip())
             enviados_ok += 1
+            # Pausa de 2.0s para respetar los límites de la API de Telegram
             time.sleep(2.0)
         else:
-            log(f"Fallo al entregar '{n.get('titulo')}'. Queda pendiente para reintentar.")
+            log(f"No se pudo entregar '{n.get('titulo')}'. Quedará pendiente para reintentar.")
 
     log(f"Total notificados con éxito: {enviados_ok}")
     save_registered_events(historial)
