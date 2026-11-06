@@ -1,9 +1,14 @@
 import os
 import re
+import sys
 import json
 import time
 import requests
 from bs4 import BeautifulSoup
+
+# Forzar salida en vivo en GitHub Actions
+def log(msg):
+    print(msg, flush=True)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -27,7 +32,7 @@ def load_registered_events():
                 data = json.load(f)
                 return data if isinstance(data, list) else []
         except Exception as e:
-            print(f"Aviso al cargar JSON ({e}). Iniciando vacio.")
+            log(f"Aviso al cargar JSON ({e}). Iniciando vacío.")
             return []
     return []
 
@@ -35,9 +40,9 @@ def save_registered_events(events):
     try:
         with open(JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(events, f, indent=2, ensure_ascii=False)
-        print("Historial guardado en eventos_registrados.json")
+        log("Historial guardado en eventos_registrados.json")
     except Exception as e:
-        print(f"Error guardando JSON: {e}")
+        log(f"Error guardando JSON: {e}")
 
 def extraer_detalles_pagina(url):
     if not url or url == "N/A":
@@ -63,7 +68,7 @@ def extraer_detalles_pagina(url):
             
             return img_url, fecha
     except Exception as e:
-        print(f"Aviso metadata {url}: {e}")
+        log(f"Aviso metadata {url}: {e}")
     return None, None
 
 def scrape_lemmy():
@@ -73,11 +78,12 @@ def scrape_lemmy():
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.encoding = "utf-8"
         if r.status_code != 200:
+            log(f"Lemmy HTTP error: {r.status_code}")
             return eventos
 
         soup = BeautifulSoup(r.text, "html.parser")
         links = soup.select("a[href*='/eventos/']")
-        print(f"Lemmy Productions: {len(links)} enlaces encontrados")
+        log(f"Lemmy Productions: {len(links)} enlaces encontrados")
 
         vistos = set()
         for a in links:
@@ -129,7 +135,7 @@ def scrape_lemmy():
                 "fuente": "Lemmy Productions"
             })
     except Exception as e:
-        print(f"Error procesando Lemmy: {e}")
+        log(f"Error procesando Lemmy: {e}")
     return eventos
 
 def scrape_paramo():
@@ -169,9 +175,9 @@ def scrape_paramo():
                     "img": img_url,
                     "fuente": "Páramo Presenta"
                 })
-        print(f"Páramo Presenta: {len(eventos)} eventos encontrados")
+        log(f"Páramo Presenta: {len(eventos)} eventos encontrados")
     except Exception as e:
-        print(f"Error procesando Páramo: {e}")
+        log(f"Error procesando Páramo: {e}")
     return eventos
 
 def scrape_factormetal():
@@ -219,9 +225,9 @@ def scrape_factormetal():
             if eventos:
                 break
         except Exception as e:
-            print(f"Error procesando Factor Metal en {url}: {e}")
+            log(f"Error procesando Factor Metal en {url}: {e}")
 
-    print(f"Factor Metal: {len(eventos)} eventos encontrados")
+    log(f"Factor Metal: {len(eventos)} eventos encontrados")
     return eventos
 
 def notificar_telegram(evento):
@@ -261,7 +267,7 @@ def notificar_telegram(evento):
             if resp.status_code == 200:
                 return True
         except Exception as e:
-            print(f"Aviso sendPhoto: {e}. Intentando texto simple...")
+            log(f"Aviso sendPhoto: {e}. Intentando texto simple...")
 
     try:
         url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -274,23 +280,25 @@ def notificar_telegram(evento):
         resp = requests.post(url_api, data=payload, timeout=10)
         return resp.status_code == 200
     except Exception as e:
-        print(f"Error enviando mensaje a Telegram: {e}")
+        log(f"Error enviando mensaje a Telegram: {e}")
         return False
 
 def main():
+    log("=== INICIANDO EJECUCIÓN DEL SCRAPER ===")
+    
     if not BOT_TOKEN or not CHAT_ID:
-        print("ERROR: Variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configuradas.")
+        log(f"ERROR: Credenciales faltantes -> BOT_TOKEN: {bool(BOT_TOKEN)}, CHAT_ID: {bool(CHAT_ID)}")
         return
 
     historial = load_registered_events()
-    print(f"Historial actual: {len(historial)} URLs registradas.")
+    log(f"Historial cargado: {len(historial)} URLs registradas.")
 
     todos_eventos = []
     todos_eventos.extend(scrape_lemmy())
     todos_eventos.extend(scrape_paramo())
     todos_eventos.extend(scrape_factormetal())
 
-    print(f"Total eventos escaneados: {len(todos_eventos)}")
+    log(f"Total eventos recolectados en esta pasada: {len(todos_eventos)}")
 
     novedades = []
     for ev in todos_eventos:
@@ -298,20 +306,24 @@ def main():
         if link and link != "N/A" and link not in historial:
             novedades.append(ev)
 
-    print(f"Novedades detectadas: {len(novedades)}")
+    log(f"Novedades reales a notificar: {len(novedades)}")
 
     if not novedades:
-        print("Todo al dia. No se envia notificacion.")
+        log("Todo al día. No se envía notificación.")
         return
 
     enviados_ok = 0
     for n in novedades:
-        print(f"Procesando novedad: {n.get('titulo', 'N/A')}")
+        log(f"Enviando alerta a Telegram: {n.get('titulo', 'N/A')}")
         ok = notificar_telegram(n)
         if ok:
             historial.append(n["link"].strip())
             enviados_ok += 1
             time.sleep(1.2)
 
-    print(f"Se notificaron con exito {enviados_ok} conciertos nuevos.")
-    save_
+    log(f"Se notificaron con éxito {enviados_ok} conciertos nuevos.")
+    save_registered_events(historial)
+    log("=== FIN DE LA EJECUCIÓN ===")
+
+if __name__ == "__main__":
+    main()
