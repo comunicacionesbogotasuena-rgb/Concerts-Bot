@@ -136,7 +136,7 @@ def scrape_lemmy():
                 "fuente": "Lemmy Productions"
             })
     except Exception as e:
-        log(f"Error procesando Lemmy: {e}")
+        log(f"Error Lemmy: {e}")
     return eventos
 
 # 2. PÁRAMO PRESENTA
@@ -144,9 +144,14 @@ def scrape_paramo_playwright(page):
     eventos = []
     url = "https://www.paramopresenta.com/eventos"
     try:
-        log("Abriendo Páramo Presenta...")
+        log("Abriendo Páramo Presenta en Chromium...")
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3500)
+        
+        # Esperar explícitamente a que existan los enlaces de eventos
+        try:
+            page.wait_for_selector("a[href*='/evento'], a[href*='tickets'], .event-card, .card", timeout=8000)
+        except Exception:
+            page.wait_for_timeout(3000)
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
@@ -186,13 +191,13 @@ def scrape_paramo_playwright(page):
         log(f"Error Páramo: {e}")
     return eventos
 
-# 3. FACTOR METAL (Lectura directa de notas de prensa de conciertos)
+# 3. FACTOR METAL
 def scrape_factormetal_playwright(page):
     eventos = []
     url = "https://factormetal.com/category/conciertos/"
     vistos = set()
     try:
-        log("Abriendo Factor Metal (Categoría Conciertos)...")
+        log("Abriendo Factor Metal en Chromium...")
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
@@ -203,23 +208,31 @@ def scrape_factormetal_playwright(page):
         log(f"Factor Metal: {len(posts)} notas detectadas")
 
         for p in posts:
-            a_tag = p.select_one("h2 a, h3 a, .entry-title a")
+            # Buscar el enlace principal dentro de cada artículo
+            todos_los_links = p.find_all("a", href=True)
+            a_tag = None
+            
+            for lk in todos_los_links:
+                tx = lk.get_text(strip=True)
+                hr = lk["href"].strip()
+                # El enlace del título no es una categoría ni autor
+                if len(tx) > 6 and not any(x in hr for x in ["/category/", "/tag/", "/author/", "#"]):
+                    if not any(bad in tx.lower() for bad in ["leer más", "comentarios", "inicio", "facebook", "twitter"]):
+                        a_tag = lk
+                        break
+
             if not a_tag:
                 continue
 
-            link = (a_tag.get("href") or "").strip()
-            clean_link = link.rstrip("/")
-
-            if not clean_link or clean_link in vistos or clean_link in ["https://factormetal.com/category/conciertos", "https://factormetal.com/conciertos"]:
+            link = (a_tag.get("href") or "").strip().rstrip("/")
+            if not link or link in vistos:
                 continue
 
             titulo = a_tag.get_text(" ", strip=True)
             if not titulo or len(titulo) < 6:
                 continue
-            if any(bad in titulo.lower() for bad in ["inicio", "contacto", "política", "privacidad", "factor d studio", "facebook", "twitter", "instagram"]):
-                continue
 
-            vistos.add(clean_link)
+            vistos.add(link)
 
             time_tag = p.select_one("time, .entry-date, .published")
             fecha = time_tag.get_text(strip=True) if time_tag else "Consultar enlace"
@@ -231,7 +244,7 @@ def scrape_factormetal_playwright(page):
                 "titulo": titulo,
                 "fecha": fecha,
                 "lugar": "Bogotá",
-                "link": clean_link,
+                "link": link,
                 "img": img_url,
                 "fuente": "Factor Metal"
             })
@@ -241,7 +254,7 @@ def scrape_factormetal_playwright(page):
         log(f"Error Factor Metal: {e}")
     return eventos
 
-# 4. DISPATCHER A TELEGRAM
+# 4. ENVÍO A TELEGRAM
 def notificar_telegram(evento):
     titulo = evento.get("titulo") or "N/A"
     fecha = evento.get("fecha") or "N/A"
@@ -266,7 +279,6 @@ def notificar_telegram(evento):
         f"🎟️ <b>Boletería / Info:</b> {link}"
     )
 
-    # Intento 1: Con foto
     if img_url and isinstance(img_url, str) and img_url.startswith("http"):
         try:
             url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -280,11 +292,10 @@ def notificar_telegram(evento):
             if resp.status_code == 200:
                 log(f"✅ Enviado con flyer: {titulo}")
                 return True
-            log(f"Aviso sendPhoto HTTP {resp.status_code}. Pasando a texto plano...")
+            log(f"Aviso foto HTTP {resp.status_code}. Pasando a texto plano...")
         except Exception as e:
-            log(f"Excepción en foto: {e}. Pasando a texto plano...")
+            log(f"Excepción foto: {e}. Pasando a texto plano...")
 
-    # Intento 2: Con texto directo
     try:
         url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
@@ -300,7 +311,7 @@ def notificar_telegram(evento):
         log(f"❌ Error Telegram ({resp.status_code}): {resp.text}")
         return False
     except Exception as e:
-        log(f"❌ Excepción en mensaje: {e}")
+        log(f"❌ Excepción mensaje: {e}")
         return False
 
 def main():
@@ -351,7 +362,6 @@ def main():
         if ok:
             historial.append(n["link"].strip())
             enviados_ok += 1
-            # Pausa obligatoria para evitar límites de ráfaga
             time.sleep(2.0)
         else:
             log(f"Fallo al entregar '{n.get('titulo')}'. Queda pendiente para reintentar.")
