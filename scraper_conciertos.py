@@ -1,849 +1,304 @@
-
-import json
 import os
 import re
+import json
+import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import (
-    urljoin,
-    urlparse,
-    urldefrag,
-    unquote,
-)
-from html import unescape
-from playwright.sync_api import sync_playwright
 
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+JSON_FILE = "eventos_registrados.json"
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-KEYWORDS_METAL = [
-    "metal", "thrash", "death metal", "black metal", "heavy metal",
-    "power metal", "doom", "sludge", "grindcore", "metalcore",
-    "nu metal", "groove metal", "slayer", "opeth", "slipknot",
-    "dying fetus", "malevolent creation", "epica", "hammerfall",
-    "testament", "dethklok", "angeles del infierno", "kraken",
-    "hellripper", "saor", "kanonenfieber", "avatar", "equilibrium",
-    "slaughter to prevail", "eleine", "roberto tiranti"
-]
+MESES = {
+    "ene": "Enero", "feb": "Febrero", "mar": "Marzo", "abr": "Abril",
+    "may": "Mayo", "jun": "Junio", "jul": "Julio", "ago": "Agosto",
+    "sep": "Septiembre", "oct": "Octubre", "nov": "Noviembre", "dic": "Diciembre"
+}
 
-KEYWORDS_ROCK = [
-    "rock", "punk", "hardcore", "indie", "post-punk", "grunge",
-    "alternative rock", "rock alternativo", "hard rock", "bunbury",
-    "caifanes", "the strokes", "placebo",
-    "los fabulosos cadillacs", "def leppard", "soda stereo",
-    "aterciopelados", "conociendo rusia", "maná", "mana",
-    "the rasmus", "hombres g", "hammerfall",
-    "post-hardcore", "hardcore punk", "screamo", "emo",
-    "shoegaze", "new wave", "gothic rock", "industrial rock",
-    "garage rock", "psychedelic rock", "stoner rock",
-    "noise rock", "progressive rock", "prog rock", "post-rock",
-    "folk rock", "rockabilly", "crossover thrash"
-]
+def load_registered_events():
+    if os.path.exists(JSON_FILE):
+        try:
+            with open(JSON_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"Aviso al cargar JSON ({e}). Iniciando historial vacío.")
+            return []
+    return []
 
-
-def classify_genre(title: str) -> str:
-    text = title.lower()
-
-    for keyword in KEYWORDS_METAL:
-        if re.search(r"\b" + re.escape(keyword) + r"\b", text):
-            return "METAL"
-
-    for keyword in KEYWORDS_ROCK:
-        if re.search(r"\b" + re.escape(keyword) + r"\b", text):
-            return "ROCK"
-
-    return "OTROS"
-
-
-def send_telegram(message: str) -> bool:
-    """Envía un mensaje y devuelve True si Telegram lo acepta."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("ERROR: Faltan credenciales de Telegram.")
-        return False
-
-    url = (
-        "https://api.telegram.org/"
-        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-
+def save_registered_events(events):
     try:
-        response = requests.post(url, json=payload, timeout=20)
-        print("Telegram status:", response.status_code)
-        response.raise_for_status()
+        with open(JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(events, f, indent=2, ensure_ascii=False)
+        print("Historial actualizado en eventos_registrados.json")
+    except Exception as e:
+        print(f"Error guardando JSON: {e}")
 
-        result = response.json()
-
-        if result.get("ok"):
-            return True
-
-        print("Telegram informó un error:", result)
-        return False
-
-    except Exception as error:
-        print(f"Error enviando a Telegram: {error}")
-        return False
-
-
-def make_event(source: str, title: str, url: str) -> dict:
-    """Normaliza títulos y URLs de los eventos."""
-    normalized_url = urldefrag(url.strip())[0].rstrip("/")
-    clean_title = " ".join(
-        unquote(unescape(title)).split()
-    )
-
-    return {
-        "id": normalized_url,
-        "source": source,
-        "title": clean_title,
-        "url": normalized_url,
-        "date": None,
-        "time": None
-    }
-
-
-
-def extract_event_datetime(url: str) -> dict:
-    """Busca fecha y hora en etiquetas HTML y metadatos del evento."""
-    result = {"date": None, "time": None}
-
+def extraer_detalles_pagina(url):
+    """
+    Intenta extraer flyer y fecha de la página interna del concierto.
+    Retorna (None, None) de manera segura ante cualquier fallo sin romper el flujo.
+    """
+    if not url or url == "N/A":
+        return None, None
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Páramo usa etiquetas como:
-        # <time dateTime="2026-11-02T00:00:00.000Z">nov. 02 2026</time>
-        for tag in soup.find_all("time"):
-            value = tag.get("datetime") or tag.get("dateTime")
-            if not value:
-                continue
-
-            match = re.search(
-                r"(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?",
-                value
-            )
-            if match:
-                result["date"] = match.group(1)
-
-                # No interpretar medianoche UTC como hora del concierto.
-                if match.group(2) and not value.endswith("Z"):
-                    result["time"] = match.group(2)
-
-                return result
-
-        # Busca también fechas en datos estructurados JSON-LD.
-        for script in soup.find_all(
-            "script", type="application/ld+json"
-        ):
-            try:
-                data = json.loads(
-                    script.string or script.get_text()
-                )
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            pending = data if isinstance(data, list) else [data]
-
-            while pending:
-                item = pending.pop(0)
-                if not isinstance(item, dict):
-                    continue
-
-                for key in ("@graph", "itemListElement"):
-                    nested = item.get(key)
-                    if isinstance(nested, list):
-                        pending.extend(nested)
-
-                value = item.get("startDate") or item.get("start_date")
-                if isinstance(value, str):
-                    match = re.search(
-                        r"(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?",
-                        value
-                    )
-                    if match:
-                        result["date"] = match.group(1)
-                        if match.group(2) and not value.endswith("Z"):
-                            result["time"] = match.group(2)
-                        return result
-
-    except Exception as error:
-        print(f"Aviso: no se pudo leer fecha de {url}: {error}")
-
-    return result
-
-def enrich_event_dates(events: list) -> list:
-    """Busca fechas sin inventarlas; deja vacíos los datos no encontrados."""
-    for index, event in enumerate(events, start=1):
-        if event.get("date"):
-            continue
-        print(f"Buscando fecha ({index}/{len(events)}): {event.get('title', '')}")
-        details = extract_event_datetime(event["url"])
-        event["date"] = details["date"]
-        event["time"] = details["time"]
-    return events
-
-
-# 1. FACTOR METAL
-def get_factor_metal():
-    events = []
-    url = "https://www.factormetal.com/conciertos/"
-
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for item in soup.find_all("li"):
-            text = item.get_text(" ", strip=True)
-            link_tag = item.find("a", href=True)
-
-            if (
-                "@" in text
-                and (
-                    "Bogotá" in text
-                    or "Bogota" in text
-                    or "Colombia" in text
-                )
-            ):
-                title = text.split("@")[0].strip()
-                link = (
-                    urljoin(url, link_tag["href"])
-                    if link_tag else url
-                )
-                events.append(
-                    make_event("Factor Metal", title, link)
-                )
-
-    except Exception as error:
-        print(f"Error Factor Metal: {error}")
-
-    return events
-
-
-# 2. TUBOLETA
-def get_tuboleta():
-    events = []
-    url = "https://tuboleta.com/es/categorias/conciertos"
-
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for anchor in soup.find_all("a", href=True):
-            href = anchor["href"].strip()
-            title = anchor.get_text(" ", strip=True)
-
-            if "/eventos/" not in href or len(title) < 4:
-                continue
-
-            full_url = urljoin(url, href)
-            host = urlparse(full_url).netloc.lower()
-
-            if "tuboleta.com" not in host:
-                continue
-
-            events.append(
-                make_event("Tuboleta", title, full_url)
-            )
-
-    except Exception as error:
-        print(f"Error Tuboleta: {error}")
-
-    return events
-
-
-# 3. TICKETMASTER COLOMBIA
-def get_ticketmaster():
-    events = []
-    url = "https://www.ticketmaster.co/page/CONCIERTOS"
-
-    excluded = [
-        "politica", "terminos", "faq", "contact",
-        "comunicados", "privacidad", "ayuda"
-    ]
-
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for anchor in soup.find_all("a", href=True):
-            href = anchor["href"].strip()
-            title = anchor.get_text(" ", strip=True)
-
-            if len(title) < 4:
-                continue
-
-            full_url = urljoin(url, href)
-            host = urlparse(full_url).netloc.lower()
-
-            if "ticketmaster.co" not in host:
-                continue
-
-            if any(word in full_url.lower() for word in excluded):
-                continue
-
-            if not any(
-                word in full_url.lower()
-                for word in [
-                    "event", "evento", "concert", "concierto"
-                ]
-            ):
-                continue
-
-            events.append(
-                make_event("Ticketmaster CO", title, full_url)
-            )
-
-    except Exception as error:
-        print(f"Error Ticketmaster: {error}")
-
-    return events
-
-
-# 4. PÁRAMO PRESENTA
-# Usa Chromium para páginas que cargan contenido con JavaScript.
-def get_paramo_presenta():
-    events = []
-    url = "https://www.paramopresenta.com/eventos"
-    browser = None
-
-    generic_titles = {
-        "", "ver evento", "comprar entradas",
-        "más información", "ver más", "conoce más",
-        "tickets", "comprar", "ver detalles"
-    }
-
-    try:
-        with sync_playwright() as playwright:
-            print("DEBUG PARAMO: iniciando Playwright")
-
-            browser = playwright.chromium.launch(headless=True)
-            print("DEBUG PARAMO: Chromium iniciado correctamente")
-
-            page = browser.new_page(
-                user_agent=HEADERS["User-Agent"],
-                locale="es-CO"
-            )
-
-            response = page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            if response is not None:
-                print("DEBUG PARAMO: HTTP =", response.status)
+        r = requests.get(url, headers=HEADERS, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            # Flyer
+            img_url = None
+            og_img = soup.select_one("meta[property='og:image'], meta[name='twitter:image']")
+            if og_img and og_img.get("content"):
+                img_url = og_img["content"].strip()
             else:
-                print("DEBUG PARAMO: no se recibió respuesta HTTP")
+                img_tag = soup.select_one(".event-image img, .tribe-events-event-image img, .wp-post-image, article img")
+                if img_tag and img_tag.get("src"):
+                    img_url = img_tag["src"].strip()
 
-            print("DEBUG PARAMO: URL final =", page.url)
-            print("DEBUG PARAMO: título =", page.title())
+            # Fecha
+            fecha = None
+            meta_date = soup.select_one("meta[property='event:start_time'], time")
+            if meta_date:
+                fecha = (meta_date.get_text(strip=True) or meta_date.get("datetime") or "").strip()
+            
+            return img_url, fecha
+    except Exception as e:
+        print(f"Aviso: no se pudo extraer metadatos de {url}: {e}")
+    return None, None
 
-            # Esperar el renderizado de contenido dinámico.
-            page.wait_for_timeout(5000)
-
-            # Recoger enlaces y títulos del DOM.
-            links = page.locator("a[href]").evaluate_all(
-                """anchors => anchors.map(a => {
-                    const card = a.closest(
-                        'article, li, [class*="event"], [class*="card"]'
-                    );
-                    const heading = card
-                        ? card.querySelector('h1,h2,h3,h4,h5')
-                        : null;
-
-                    return {
-                        href: a.href,
-                        text: (a.innerText || a.textContent || '').trim(),
-                        heading: heading
-                            ? heading.innerText.trim()
-                            : ''
-                    };
-                })"""
-            )
-
-            print(
-                "DEBUG PARAMO: total de enlaces del DOM =",
-                len(links)
-            )
-
-            for item in links:
-                full_url = item.get("href", "").strip()
-
-                if not full_url:
-                    continue
-
-                parsed = urlparse(full_url)
-                host = parsed.netloc.lower()
-                path = parsed.path.lower()
-
-                # Solo el dominio oficial.
-                if host not in (
-                    "paramopresenta.com",
-                    "www.paramopresenta.com"
-                ):
-                    continue
-
-                # Solo páginas individuales de eventos.
-                if not re.match(r"^/eventos/[^/]+/?$", path):
-                    continue
-
-                # Normalizar URL: sin fragmentos, parámetros ni
-                # barra final.
-                normalized_url = (
-                    parsed.scheme
-                    + "://"
-                    + parsed.netloc
-                    + parsed.path
-                ).rstrip("/")
-
-                title = (
-                    item.get("heading", "").strip()
-                    or item.get("text", "").strip()
-                )
-                title = " ".join(
-                    unquote(unescape(title)).split()
-                )
-
-                # Si el texto del enlace es genérico, obtener el
-                # nombre del evento a partir del slug de la URL.
-                if title.casefold() in generic_titles:
-                    slug = parsed.path.rstrip("/").split("/")[-1]
-                    slug = unquote(slug)
-
-                    slug = re.sub(
-                        r"-tickets-[a-z0-9]+$",
-                        "",
-                        slug,
-                        flags=re.IGNORECASE
-                    )
-
-                    title = (
-                        slug.replace("-", " ")
-                        .replace("_", " ")
-                        .title()
-                    )
-
-                    # Corregir capitalización habitual de nombres.
-                    title = re.sub(
-                        r"autéNticos",
-                        "auténticos",
-                        title,
-                        flags=re.IGNORECASE
-                    )
-
-                if len(title) < 3:
-                    continue
-
-                events.append(
-                    make_event(
-                        "Páramo Presenta",
-                        title,
-                        normalized_url
-                    )
-                )
-
-            browser.close()
-            browser = None
-
-        # Deduplicar por URL normalizada.
-        unique = {}
-
-        for event in events:
-            unique.setdefault(event["url"], event)
-
-        events = list(unique.values())
-
-        print(
-            "Páramo Presenta:",
-            len(events),
-            "eventos encontrados"
-        )
-
-        target_url = (
-            "https://www.paramopresenta.com/"
-            "eventos/def-leppard-tickets-ae3791"
-        ).rstrip("/")
-
-        found_def_leppard = any(
-            event["url"].lower() == target_url.lower()
-            for event in events
-        )
-
-        print(
-            "DEBUG PARAMO: enlace de Def Leppard encontrado =",
-            found_def_leppard
-        )
-
-        for event in events:
-            print(f"  - {event['title']}: {event['url']}")
-
-        if not events:
-            print(
-                "DEBUG PARAMO: no se encontraron eventos. "
-                "Revisar el HTML y el contenido dinámico."
-            )
-
-    except Exception as error:
-        print(f"Error Páramo Presenta: {error}")
-
-    finally:
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
-
-    return events
-
-
-# 5. MOVE CONCERTS
-def get_move_concerts():
-    events = []
-    browser = None
-    base_url = "https://moveconcerts.com/co/"
-
+def scrape_lemmy():
+    eventos = []
+    url = "https://www.lemmyprods.com/eventos"
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent=HEADERS["User-Agent"]
-            )
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            return eventos
 
-            page.goto(
-                base_url,
-                wait_until="domcontentloaded",
-                timeout=45000
-            )
-            page.wait_for_timeout(3000)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.select("a[href*='/eventos/']")
+        print(f"Lemmy Productions: {len(links)} enlaces candidatos encontrados")
 
-            for anchor in page.query_selector_all("a[href]"):
-                href = anchor.get_attribute("href") or ""
-                title = anchor.inner_text().strip()
+        vistos = set()
+        for a in links:
+            href = (a.get("href") or "").strip()
+            if not href or href in vistos or href.rstrip("/") == "https://www.lemmyprods.com/eventos":
+                continue
+            if not href.startswith("http"):
+                href = f"https://www.lemmyprods.com{href}"
 
-                if len(title) < 4:
-                    continue
+            vistos.add(href)
+            texto = a.get_text(" ", strip=True) or ""
 
-                full_url = urljoin(base_url, href)
-                host = urlparse(full_url).netloc.lower()
+            # 1. Fecha con fallback N/A
+            fecha_match = re.search(r"(\b\d{1,2}\s+(?:ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)\b)", texto, re.IGNORECASE)
+            fecha = "N/A"
+            if fecha_match:
+                f_raw = fecha_match.group(1).upper()
+                partes = f_raw.split()
+                if len(partes) == 2:
+                    dia = partes[0]
+                    mes_nombre = MESES.get(partes[1].lower(), partes[1])
+                    fecha = f"{dia} de {mes_nombre}"
 
-                if "moveconcerts.com" not in host:
-                    continue
+            # 2. Recinto / Lugar con fallback N/A
+            lugar = "N/A"
+            for rec in ["Ace of Spades Club", "Ace of Spades", "Royal Center", "Auditorio CUN", "Teatro Astor Plaza", "Auditorio CEG", "Movistar Arena"]:
+                if re.search(rf"\b{re.escape(rec)}\b", texto, re.IGNORECASE):
+                    lugar = rec
+                    break
 
-                if not any(
-                    word in full_url.lower()
-                    for word in [
-                        "show", "concierto", "evento",
-                        "event", "tour", "artist"
-                    ]
-                ):
-                    continue
+            # 3. Titulo con fallback N/A
+            titulo = re.sub(r"^\d{1,2}\s+[A-Z]{3}\s*(?:En venta\s+)?", "", texto, flags=re.IGNORECASE)
+            titulo = re.sub(r"(?:en Bogotá|Bogotá D\.C\.|·\s*Bogotá.*|\d{1,2}:\d{2}\s*(?:a\.\s*m\.|p\.\s*m\.).*)", "", titulo, flags=re.IGNORECASE).strip(" -·")
+            if not titulo:
+                titulo = "N/A"
 
-                if any(
-                    word in full_url.lower()
-                    for word in [
-                        "politica", "terminos", "contacto",
-                        "quienes-somos", "privacy"
-                    ]
-                ):
-                    continue
+            # 4. Imagen de tarjeta
+            img_card = a.select_one("img")
+            img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
 
-                events.append(
-                    make_event("Move Concerts", title, full_url)
-                )
+            eventos.append({
+                "titulo": titulo,
+                "fecha": fecha,
+                "lugar": lugar,
+                "link": href,
+                "img": img_url,
+                "fuente": "Lemmy Productions"
+            })
+    except Exception as e:
+        print(f"Error procesando Lemmy: {e}")
+    return eventos
 
-            browser.close()
-            browser = None
-
-    except Exception as error:
-        print(f"Error Move Concerts: {error}")
-
-    finally:
-        if browser:
-            try:
-                browser.close()
-            except Exception:
-                pass
-
-    return events
-
-
-# 6. LEMMY PRODUCTIONS
-def get_lemmyprods():
-    events = []
-    url = "https://www.lemmyprods.com/eventos/"
-
+def scrape_paramo():
+    eventos = []
+    url = "https://www.paramopresenta.com/eventos"
     try:
-        response = requests.get(url, headers=HEADERS, timeout=25)
-        response.raise_for_status()
-        response.encoding = (
-            response.apparent_encoding or "utf-8"
-        )
-        soup = BeautifulSoup(response.text, "html.parser")
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            cards = soup.select("a[href*='/eventos/']")
+            vistos = set()
+            for a in cards:
+                href = (a.get("href") or "").strip()
+                if not href or href in vistos or href.endswith("/eventos") or href.endswith("/eventos/"):
+                    continue
+                if not href.startswith("http"):
+                    href = f"https://www.paramopresenta.com{href}"
+                vistos.add(href)
 
-        for anchor in soup.find_all("a", href=True):
-            href = anchor["href"].strip()
-            full_url = urljoin(url, href)
-            parsed = urlparse(full_url)
-            normalized_url = full_url.rstrip("/")
-            title = anchor.get_text(" ", strip=True)
+                t = a.get_text(" ", strip=True) or "N/A"
+                img_card = a.select_one("img")
+                img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
 
-            if parsed.netloc.lower() not in (
-                "lemmyprods.com",
-                "www.lemmyprods.com"
-            ):
-                continue
+                eventos.append({
+                    "titulo": t,
+                    "fecha": "N/A",
+                    "lugar": "Bogotá",
+                    "link": href,
+                    "img": img_url,
+                    "fuente": "Páramo Presenta"
+                })
+    except Exception as e:
+        print(f"Error procesando Páramo: {e}")
+    return eventos
 
-            if "/eventos/" not in parsed.path.lower():
-                continue
+def scrape_factormetal():
+    eventos = []
+    url = "https://factormetal.com/eventos/"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            items = soup.select(".type-tribe_events, article, .event-item")
+            for it in items:
+                t_tag = it.select_one("h2, h3, .tribe-events-list-event-title")
+                a_tag = it.select_one("a[href*='factormetal.com/evento/']")
+                img_tag = it.select_one("img")
+                time_tag = it.select_one(".tribe-event-date-start, time")
 
-            if normalized_url == url.rstrip("/"):
-                continue
+                titulo = t_tag.get_text(strip=True) if t_tag else "N/A"
+                fecha = time_tag.get_text(strip=True) if time_tag else "N/A"
+                img_url = img_tag.get("src").strip() if (img_tag and img_tag.get("src")) else None
+                link = a_tag["href"].strip() if (a_tag and a_tag.get("href")) else "N/A"
 
-            if len(title) < 4:
-                continue
+                if link != "N/A":
+                    eventos.append({
+                        "titulo": titulo,
+                        "fecha": fecha,
+                        "lugar": "Bogotá",
+                        "link": link,
+                        "img": img_url,
+                        "fuente": "Factor Metal"
+                    })
+    except Exception as e:
+        print(f"Error procesando Factor Metal: {e}")
+    return eventos
 
-            events.append(
-                make_event(
-                    "Lemmy Productions",
-                    title,
-                    normalized_url
-                )
-            )
+def notificar_telegram(evento):
+    """
+    Envía notificación tolerante a fallos:
+    - Usa 'N/A' en cualquier valor faltante.
+    - Si falla el envío de foto, recurre al mensaje de texto.
+    """
+    titulo = evento.get("titulo") or "N/A"
+    fecha = evento.get("fecha") or "N/A"
+    lugar = evento.get("lugar") or "N/A"
+    fuente = evento.get("fuente") or "N/A"
+    link = evento.get("link") or "N/A"
+    img_url = evento.get("img")
 
-        unique = {
-            event["url"]: event
-            for event in events
+    # Si falta flyer o fecha, intenta consultar en segundo plano sin trabar la ejecución
+    if (not img_url or fecha == "N/A") and link != "N/A":
+        flyer_det, fecha_det = extraer_detalles_pagina(link)
+        if not img_url and flyer_det:
+            img_url = flyer_det
+        if fecha == "N/A" and fecha_det:
+            fecha = fecha_det
+
+    texto = (
+        f"⚡ <b>NUEVO CONCIERTO DETECTADO</b>\n\n"
+        f"🎸 <b>Evento:</b> {titulo}\n"
+        f"📅 <b>Fecha:</b> {fecha}\n"
+        f"📍 <b>Lugar:</b> {lugar}\n"
+        f"🏛️ <b>Organiza / Fuente:</b> {fuente}\n\n"
+        f"🎟️ <b>Boletería / Info:</b> {link}"
+    )
+
+    # 1. Intentar enviar con foto
+    if img_url:
+        try:
+            url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+            payload = {
+                "chat_id": CHAT_ID,
+                "photo": img_url,
+                "caption": texto,
+                "parse_mode": "HTML"
+            }
+            resp = requests.post(url_api, data=payload, timeout=12)
+            if resp.status_code == 200:
+                return True
+        except Exception as e:
+            print(f"Aviso sendPhoto: {e}. Intentando por texto simple...")
+
+    # 2. Respaldo a texto simple si no hay imagen o si sendPhoto da error
+    try:
+        url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": texto,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
         }
-        events = list(unique.values())
-
-        print(
-            f"Lemmy Productions: {len(events)} "
-            "enlaces candidatos encontrados"
-        )
-
-        for event in events:
-            print(f"  - {event['title']}: {event['url']}")
-
-    except Exception as error:
-        print(f"Error Lemmy Productions: {error}")
-
-    return events
-
-
-def load_history(filename: str) -> set:
-    """Carga el historial existente sin borrarlo."""
-    if not os.path.exists(filename):
-        return set()
-
-    try:
-        with open(filename, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        if isinstance(data, list):
-            return set(str(item) for item in data)
-
-        print("Advertencia: el historial no es una lista.")
-
-    except (json.JSONDecodeError, OSError) as error:
-        print(f"Error leyendo historial: {error}")
-        print(
-            "Se conserva el archivo y se inicia con historial vacío."
-        )
-
-    return set()
-
-
-def save_history(filename: str, known_ids: set) -> bool:
-    try:
-        with open(filename, "w", encoding="utf-8") as file:
-            json.dump(
-                sorted(known_ids),
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
-        print("Historial actualizado correctamente.")
-        return True
-
-    except OSError as error:
-        print(f"Error guardando historial: {error}")
+        resp = requests.post(url_api, data=payload, timeout=10)
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"Error enviando mensaje a Telegram: {e}")
         return False
-
-
-def build_messages(events: list) -> list:
-    priority = {"METAL": 0, "ROCK": 1, "OTROS": 2}
-
-    events.sort(
-        key=lambda event: priority.get(event["category"], 2)
-    )
-
-    messages = []
-    current_message = (
-        f"🚨 *Nuevos conciertos y eventos ({len(events)})*\n"
-        "-------------------------------------\n\n"
-    )
-
-    for event in events:
-        category = event["category"]
-
-        if category == "METAL":
-            badge = "🔥 *[METAL]*"
-        elif category == "ROCK":
-            badge = "🎸 *[ROCK]*"
-        else:
-            badge = "⚡ *[OTROS]*"
-
-        title = (
-            event["title"]
-            .replace("*", "")
-            .replace("_", "\\_")
-        )
-        source = (
-            event["source"]
-            .replace("*", "")
-            .replace("_", "\\_")
-        )
-        url = event["url"]
-
-        event_date = event.get("date")
-        event_time = event.get("time")
-        date_line = f"📅 *Fecha:* {event_date}\n" if event_date else "📅 *Fecha:* Por confirmar\n"
-        time_line = f"🕒 *Hora:* {event_time}\n" if event_time else ""
-        card = (
-            f"{badge} *{title}*\n"
-            f"{date_line}"
-            f"{time_line}"
-            f"🏢 *Fuente:* {source}\n"
-            f"🔗 [Ver evento]({url})\n\n"
-        )
-
-        if len(current_message) + len(card) > 3500:
-            messages.append(current_message)
-            current_message = card
-        else:
-            current_message += card
-
-    if current_message.strip():
-        messages.append(current_message)
-
-    return messages
-
 
 def main():
-    history_file = "eventos_registrados.json"
-    known_ids = load_history(history_file)
+    if not BOT_TOKEN or not CHAT_ID:
+        print("ERROR: Variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configuradas.")
+        return
 
-    raw_events = []
+    historial = load_registered_events()
+    print(f"Historial actual: {len(historial)} URLs registradas.")
 
-    sources = [
-        get_factor_metal,
-        get_tuboleta,
-        get_ticketmaster,
-        get_paramo_presenta,
-        get_move_concerts,
-        get_lemmyprods
-    ]
+    todos_eventos = []
+    todos_eventos.extend(scrape_lemmy())
+    todos_eventos.extend(scrape_paramo())
+    todos_eventos.extend(scrape_factormetal())
 
-    for source_function in sources:
-        try:
-            raw_events.extend(source_function())
-        except Exception as error:
-            print(
-                f"Error inesperado en {source_function.__name__}: "
-                f"{error}"
-            )
+    print(f"Total eventos escaneados: {len(todos_eventos)}")
 
-    print(f"Total de elementos recopilados: {len(raw_events)}")
+    # Filtro tolerante por URL única
+    novedades = []
+    for ev in todos_eventos:
+        link = (ev.get("link") or "").strip()
+        if link and link != "N/A" and link not in historial:
+            novedades.append(ev)
 
-    # Conservar solo metal, rock y géneros afines.
-    filtered_events = []
-    for event in raw_events:
-        category = classify_genre(event.get("title", ""))
-        if category in ("METAL", "ROCK"):
-            event["category"] = category
-            filtered_events.append(event)
+    print(f"Novedades detectadas: {len(novedades)}")
 
-    print(
-        f"Eventos de rock/metal/alternativos: "
-        f"{len(filtered_events)}"
-    )
-
-    # Consultar fechas solo para los eventos filtrados.
-    raw_events = enrich_event_dates(filtered_events)
-
-    # Normalizar y deduplicar por URL.
-    unique_events = {}
-
-    for event in raw_events:
-        title = event.get("title", "").strip()
-        url = event.get("url", "").strip().rstrip("/")
-
-        if len(title) < 3 or not url:
-            continue
-
-        event["title"] = title
-        event["url"] = url
-        event["id"] = url
-
-        unique_events[url] = event
-
-    # Detectar eventos nuevos.
-    new_events = []
-
-    for url, event in unique_events.items():
-        if url in known_ids or event["id"] in known_ids:
-            continue
-
-        event["category"] = classify_genre(event["title"])
-        new_events.append(event)
-
-    print(f"Novedades detectadas: {len(new_events)}")
-
-    if not new_events:
+    if not novedades:
         print("Todo al día. No se envía notificación.")
         return
 
-    messages = build_messages(new_events)
+    enviados_ok = 0
+    for n in novedades:
+        print(f"Procesando novedad: {n.get('titulo', 'N/A')}")
+        ok = notificar_telegram(n)
+        if ok:
+            historial.append(n["link"].strip())
+            enviados_ok += 1
+            time.sleep(1.2)
 
-    # Registrar los eventos solo si todos los mensajes se enviaron.
-    all_sent = True
-
-    for message in messages:
-        if not send_telegram(message):
-            all_sent = False
-
-    if all_sent:
-        for event in new_events:
-            known_ids.add(event["url"])
-            known_ids.add(event["id"])
-
-        save_history(history_file, known_ids)
-    else:
-        print(
-            "No se actualizó el historial porque al menos un mensaje "
-            "no pudo enviarse. Se reintentará en la próxima ejecución."
-        )
-
+    print(f"Se notificaron con éxito {enviados_ok} conciertos nuevos.")
+    save_registered_events(historial)
 
 if __name__ == "__main__":
     main()
