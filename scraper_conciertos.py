@@ -71,9 +71,7 @@ def extraer_detalles_pagina(url):
         log(f"Aviso metadata {url}: {e}")
     return None, None
 
-# -------------------------------------------------------------
-# 1. LEMMY PRODUCTIONS (100% comprobado)
-# -------------------------------------------------------------
+# 1. LEMMY PRODUCTIONS
 def scrape_lemmy():
     eventos = []
     url = "https://www.lemmyprods.com/eventos"
@@ -141,9 +139,7 @@ def scrape_lemmy():
         log(f"Error procesando Lemmy: {e}")
     return eventos
 
-# -------------------------------------------------------------
-# 2. PÁRAMO PRESENTA (100% comprobado en Run #46: 17 únicos)
-# -------------------------------------------------------------
+# 2. PÁRAMO PRESENTA
 def scrape_paramo_playwright(page):
     eventos = []
     url = "https://paramopresenta.com/"
@@ -200,9 +196,7 @@ def scrape_paramo_playwright(page):
     log(f"Páramo Presenta: {len(eventos)} eventos únicos encontrados")
     return eventos
 
-# -------------------------------------------------------------
-# 3. FACTOR METAL (Lógica del Run #42 restaurada con filtro de widgets)
-# -------------------------------------------------------------
+# 3. FACTOR METAL
 def scrape_factormetal_playwright(page):
     eventos = []
     url = "https://factormetal.com/category/conciertos/"
@@ -226,8 +220,6 @@ def scrape_factormetal_playwright(page):
             for lk in enlaces:
                 tx = lk.get_text(" ", strip=True)
                 hr = lk["href"].strip()
-                
-                # Descartar botones, mapas, calendarios y navegación
                 if len(tx) > 7 and "category/conciertos" not in hr and not hr.endswith("#"):
                     bad_words = [
                         "ver mapa", "agregar a calendario", "google calendar", "ical", 
@@ -248,7 +240,6 @@ def scrape_factormetal_playwright(page):
             titulo = a_tag.get_text(" ", strip=True)
             vistos.add(link)
 
-            # Extraer fecha real
             time_tag = p.select_one("time, .entry-date, .published, span.date")
             fecha = "N/A"
             if time_tag:
@@ -275,9 +266,58 @@ def scrape_factormetal_playwright(page):
     log(f"Factor Metal: {len(eventos)} conciertos encontrados")
     return eventos
 
-# -------------------------------------------------------------
-# 4. DISPATCHER A TELEGRAM
-# -------------------------------------------------------------
+# 4. TICKETSHOWS (ticketshows.co)
+def scrape_ticketshows_playwright(page):
+    eventos = []
+    url = "https://ticketshows.co/"
+    vistos = set()
+
+    try:
+        log("Abriendo Ticketshows en Chromium...")
+        page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3500)
+
+        html = page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        cards = soup.select("a[href*='/evento/'], a[href*='/eventos/'], div[class*='event'] a, div[class*='card'] a")
+        
+        for a in cards:
+            href = (a.get("href") or "").strip()
+            clean_href = href.rstrip("/")
+            if not clean_href or clean_href == "https://ticketshows.co" or clean_href in vistos:
+                continue
+            if not clean_href.startswith("http"):
+                clean_href = f"https://ticketshows.co{clean_href}"
+
+            texto = a.get_text(" ", strip=True)
+            if not texto or len(texto) < 4:
+                continue
+
+            texto = re.sub(r"(?i)\b(comprar|entradas|tickets|ver más|más info|boletas)\b", "", texto).strip(" -·")
+            if not texto or texto.lower() in ["eventos", "inicio", "conciertos"]:
+                continue
+
+            vistos.add(clean_href)
+
+            img_card = a.select_one("img")
+            img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+
+            eventos.append({
+                "titulo": texto,
+                "fecha": "Consultar fecha en Ticketshows",
+                "lugar": "Bogotá",
+                "link": clean_href,
+                "img": img_url,
+                "fuente": "Ticketshows"
+            })
+    except Exception as e:
+        log(f"Error Ticketshows: {e}")
+
+    log(f"Ticketshows: {len(eventos)} eventos encontrados")
+    return eventos
+
+# DISPATCHER A TELEGRAM
 def notificar_telegram(evento):
     titulo = evento.get("titulo") or "N/A"
     fecha = evento.get("fecha") or "N/A"
@@ -286,11 +326,11 @@ def notificar_telegram(evento):
     link = evento.get("link") or "N/A"
     img_url = evento.get("img")
 
-    if (not img_url or fecha in ["N/A", "Consultar fecha oficial"]) and link != "N/A":
+    if (not img_url or fecha in ["N/A", "Consultar fecha oficial", "Consultar fecha en Ticketshows"]) and link != "N/A":
         flyer_det, fecha_det = extraer_detalles_pagina(link)
         if not img_url and flyer_det:
             img_url = flyer_det
-        if fecha in ["N/A", "Consultar fecha oficial"] and fecha_det:
+        if fecha in ["N/A", "Consultar fecha oficial", "Consultar fecha en Ticketshows"] and fecha_det:
             fecha = fecha_det
 
     texto = (
@@ -337,9 +377,6 @@ def notificar_telegram(evento):
         log(f"❌ Error de red en sendMessage: {e}")
         return False
 
-# -------------------------------------------------------------
-# 5. CONTROL PRINCIPAL
-# -------------------------------------------------------------
 def main():
     log("=== INICIANDO EJECUCIÓN DEL SCRAPER ===")
     
@@ -355,7 +392,7 @@ def main():
     # 1. Lemmy
     todos_eventos.extend(scrape_lemmy())
 
-    # 2. Páramo y Factor Metal
+    # 2. Páramo, Factor Metal y Ticketshows en Chromium
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -363,6 +400,7 @@ def main():
             
             todos_eventos.extend(scrape_paramo_playwright(page))
             todos_eventos.extend(scrape_factormetal_playwright(page))
+            todos_eventos.extend(scrape_ticketshows_playwright(page))
             
             browser.close()
     except Exception as e:
