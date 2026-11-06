@@ -5,7 +5,6 @@ import json
 import time
 import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 
 def log(msg):
     print(msg, flush=True)
@@ -16,7 +15,9 @@ JSON_FILE = "eventos_registrados.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept-Language": "es-CO,es;q=0.9,en;q=0.8"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.google.com/"
 }
 
 MESES = {
@@ -138,92 +139,95 @@ def scrape_lemmy():
         log(f"Error procesando Lemmy: {e}")
     return eventos
 
-def scrape_paramo_playwright(page):
+def scrape_paramo():
     eventos = []
-    url = "https://www.paramopresenta.com/eventos"
+    # Usar la home de paramopresenta.com que dio 23 elementos en el diagnóstico
+    url = "https://paramopresenta.com/"
     try:
-        log("Abriendo Páramo Presenta en Chromium...")
-        page.goto(url, timeout=35000, wait_until="networkidle")
-        page.wait_for_timeout(4000)
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.encoding = "utf-8"
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            cards = soup.select("a[href*='/evento'], a[href*='tickets'], div[class*='event'] a, div[class*='card'] a")
+            vistos = set()
 
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        cards = soup.select("a[href*='/eventos/'], a[href*='/evento/'], a[href*='paramopresenta.com/evento']")
-        
-        vistos = set()
-        for a in cards:
-            href = (a.get("href") or "").strip()
-            clean_href = href.rstrip("/")
-            if not clean_href or clean_href.endswith("/eventos") or clean_href in vistos:
-                continue
-            if not clean_href.startswith("http"):
-                clean_href = f"https://www.paramopresenta.com{clean_href}"
+            for a in cards:
+                href = (a.get("href") or "").strip()
+                clean_href = href.rstrip("/")
+                if not clean_href or clean_href in ["https://paramopresenta.com", "https://www.paramopresenta.com"]:
+                    continue
+                if not clean_href.startswith("http"):
+                    clean_href = f"https://paramopresenta.com{clean_href}"
 
-            vistos.add(clean_href)
-            texto = a.get_text(" ", strip=True)
-            if not texto or len(texto) < 3 or texto.lower() in ["eventos", "ver más", "comprar boletas"]:
-                continue
+                if clean_href in vistos:
+                    continue
+                vistos.add(clean_href)
 
-            img_card = a.select_one("img")
-            img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+                texto = a.get_text(" ", strip=True) or ""
+                if not texto or len(texto) < 3 or texto.lower() in ["eventos", "ver más", "comprar boletas", "conciertos"]:
+                    continue
 
-            eventos.append({
-                "titulo": texto,
-                "fecha": "Consultar fecha oficial",
-                "lugar": "Bogotá",
-                "link": clean_href,
-                "img": img_url,
-                "fuente": "Páramo Presenta"
-            })
+                img_card = a.select_one("img")
+                img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
+
+                eventos.append({
+                    "titulo": texto,
+                    "fecha": "Consultar enlace oficial",
+                    "lugar": "Bogotá",
+                    "link": clean_href,
+                    "img": img_url,
+                    "fuente": "Páramo Presenta"
+                })
         log(f"Páramo Presenta: {len(eventos)} eventos encontrados")
     except Exception as e:
-        log(f"Error Páramo con Playwright: {e}")
+        log(f"Error procesando Páramo: {e}")
     return eventos
 
-def scrape_factormetal_playwright(page):
+def scrape_factormetal():
     eventos = []
-    url = "https://www.factormetal.com/conciertos/"
+    url = "https://factormetal.com/conciertos/"
     try:
-        log("Abriendo Factor Metal en Chromium...")
-        page.goto(url, timeout=30000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.encoding = "utf-8"
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            # Buscar todos los enlaces que no sean menús ni categorías
+            links = soup.find_all("a", href=True)
+            vistos = set()
 
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        items = soup.select(".type-tribe_events, article, .event-item, .post")
-        vistos = set()
+            for a in links:
+                href = a["href"].strip()
+                clean_href = href.rstrip("/")
+                # Filtrar enlaces reales a artículos de conciertos
+                if not clean_href or clean_href in vistos:
+                    continue
+                if any(x in clean_href.lower() for x in ["/category/", "/tag/", "/author/", "/page/", "facebook.com", "instagram.com", "twitter.com", "youtube.com"]):
+                    continue
+                if not clean_href.startswith("http") or clean_href == "https://factormetal.com/conciertos":
+                    continue
 
-        for it in items:
-            a_tag = it.select_one("a[href*='/concierto/'], a[href*='/evento/'], h2 a, h3 a")
-            if not a_tag:
-                continue
-            link = (a_tag.get("href") or "").strip()
-            if not link or link in vistos or link.rstrip("/") == "https://www.factormetal.com/conciertos":
-                continue
-            vistos.add(link)
+                texto = a.get_text(" ", strip=True)
+                # Debe tener longitud de título de concierto
+                if not texto or len(texto) < 5 or texto.lower() in ["internacional", "latinoamérica", "entrevistas", "reseñas conciertos", "reseñas de discos", "conciertos"]:
+                    continue
 
-            t_tag = it.select_one("h2, h3, .tribe-events-list-event-title")
-            titulo = t_tag.get_text(strip=True) if t_tag else a_tag.get_text(strip=True)
-            if not titulo or len(titulo) < 3:
-                continue
+                vistos.add(clean_href)
 
-            time_tag = it.select_one(".tribe-event-date-start, time, .date")
-            fecha = time_tag.get_text(strip=True) if time_tag else "N/A"
+                # Buscar imagen
+                img_card = a.select_one("img")
+                img_url = img_card.get("src").strip() if (img_card and img_card.get("src")) else None
 
-            img_tag = it.select_one("img")
-            img_url = img_tag.get("src").strip() if (img_tag and img_tag.get("src")) else None
-
-            eventos.append({
-                "titulo": titulo,
-                "fecha": fecha,
-                "lugar": "Bogotá",
-                "link": link,
-                "img": img_url,
-                "fuente": "Factor Metal"
-            })
+                eventos.append({
+                    "titulo": texto,
+                    "fecha": "N/A",
+                    "lugar": "Bogotá",
+                    "link": clean_href,
+                    "img": img_url,
+                    "fuente": "Factor Metal"
+                })
         log(f"Factor Metal: {len(eventos)} eventos encontrados")
     except Exception as e:
-        log(f"Error Factor Metal con Playwright: {e}")
+        log(f"Error procesando Factor Metal: {e}")
     return eventos
 
 def notificar_telegram(evento):
@@ -234,11 +238,11 @@ def notificar_telegram(evento):
     link = evento.get("link") or "N/A"
     img_url = evento.get("img")
 
-    if (not img_url or fecha in ["N/A", "Consultar fecha oficial"]) and link != "N/A":
+    if (not img_url or fecha in ["N/A", "Consultar enlace oficial"]) and link != "N/A":
         flyer_det, fecha_det = extraer_detalles_pagina(link)
         if not img_url and flyer_det:
             img_url = flyer_det
-        if fecha in ["N/A", "Consultar fecha oficial"] and fecha_det:
+        if fecha in ["N/A", "Consultar enlace oficial"] and fecha_det:
             fecha = fecha_det
 
     texto = (
@@ -262,8 +266,9 @@ def notificar_telegram(evento):
             resp = requests.post(url_api, data=payload, timeout=12)
             if resp.status_code == 200:
                 return True
+            log(f"sendPhoto status {resp.status_code}. Pasando a texto simple...")
         except Exception as e:
-            log(f"Aviso sendPhoto: {e}. Intentando texto simple...")
+            log(f"Aviso sendPhoto: {e}. Pasando a texto simple...")
 
     try:
         url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -287,27 +292,14 @@ def main():
         return
 
     historial = load_registered_events()
-    log(f"Historial inicial: {len(historial)} URLs registradas.")
+    log(f"Historial cargado: {len(historial)} URLs registradas.")
 
     todos_eventos = []
-    
-    # 1. Lemmy (HTML plano con requests)
     todos_eventos.extend(scrape_lemmy())
+    todos_eventos.extend(scrape_paramo())
+    todos_eventos.extend(scrape_factormetal())
 
-    # 2. Páramo y Factor Metal con Playwright (renderizado real de navegador)
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
-            
-            todos_eventos.extend(scrape_paramo_playwright(page))
-            todos_eventos.extend(scrape_factormetal_playwright(page))
-            
-            browser.close()
-    except Exception as e:
-        log(f"Error general en Playwright: {e}")
-
-    log(f"Total eventos recopilados: {len(todos_eventos)}")
+    log(f"Total eventos recolectados en esta pasada: {len(todos_eventos)}")
 
     novedades = []
     for ev in todos_eventos:
@@ -315,7 +307,7 @@ def main():
         if link and link != "N/A" and link not in historial:
             novedades.append(ev)
 
-    log(f"Novedades reales a despachar: {len(novedades)}")
+    log(f"Novedades reales a notificar: {len(novedades)}")
 
     if not novedades:
         log("Todo al día. No se envía notificación.")
@@ -323,14 +315,14 @@ def main():
 
     enviados_ok = 0
     for n in novedades:
-        log(f"Despachando alerta: {n.get('titulo', 'N/A')}")
+        log(f"Enviando alerta a Telegram: {n.get('titulo', 'N/A')}")
         ok = notificar_telegram(n)
         if ok:
             historial.append(n["link"].strip())
             enviados_ok += 1
             time.sleep(1.2)
 
-    log(f"Total notificados exitosamente: {enviados_ok}")
+    log(f"Se notificaron con éxito {enviados_ok} conciertos nuevos.")
     save_registered_events(historial)
     log("=== FIN DE LA EJECUCIÓN ===")
 
