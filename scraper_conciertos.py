@@ -237,76 +237,92 @@ def scrape_paramo_playwright(page):
 # 3. FACTOR METAL
 def scrape_factormetal_playwright(page):
     eventos = []
-    url = "https://factormetal.com/category/conciertos/"
+    url = "https://factormetal.com/conciertos/"
     vistos = set()
 
     try:
-        log("Abriendo Factor Metal (Categoría Conciertos)...")
+        log("Abriendo Factor Metal (Agenda de Conciertos)...")
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2500)
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
-        posts = soup.select("article, .post, .entry, div[class*='post-']")
-        log(f"Factor Metal: {len(posts)} notas detectadas")
+        lineas = [re.sub(r"\\s+", " ", x).strip() for x in soup.get_text("\n", strip=True).split("\n")]
+        lineas = [x for x in lineas if x]
 
-        for p in posts:
-            # Solo aceptar enlaces individuales de eventos.
-            # Esto evita convertir noticias/artículos antiguos en conciertos.
-            a_tag = None
-            for lk in p.find_all("a", href=True):
-                href = normalizar_url(lk["href"].strip(), "https://factormetal.com")
-                if not href or "/evento/" not in href.lower():
-                    continue
+        log("Factor Metal: procesando agenda estructurada")
 
-                tx = lk.get_text(" ", strip=True)
-                if len(tx) < 7:
-                    continue
+        fecha_actual = None
+        titulo_actual = None
+        hora_actual = None
+        lugar_actual = None
 
-                bad_words = [
-                    "ver mapa", "agregar a calendario", "google calendar", "ical",
-                    "inicio", "contacto", "política", "privacidad", "facebook",
-                    "twitter", "comentarios", "leer más", "compartir"
-                ]
-                if not any(bad in tx.lower() for bad in bad_words):
-                    a_tag = lk
-                    break
+        patron_fecha = re.compile(
+            r"^\\d{1,2}\\s+(?:de\\s+)?[a-zA-Záéíóúñ]+,?\\s+\\d{4}$",
+            re.IGNORECASE
+        )
+        patron_hora = re.compile(r"^.*?\\d{1,2}:\\d{2}\\s*(?:AM|PM)\\s*-\\s*\\d{1,2}:\\d{2}\\s*(?:AM|PM).*$", re.IGNORECASE)
 
-            if not a_tag:
-                continue
+        def guardar_evento():
+            nonlocal titulo_actual, hora_actual, lugar_actual, fecha_actual
 
-            link = normalizar_url(a_tag["href"].strip(), "https://factormetal.com")
-            if not link or link in vistos:
-                continue
+            if not titulo_actual or not fecha_actual:
+                return
 
-            titulo = a_tag.get_text(" ", strip=True)
-            if not titulo:
-                continue
-            vistos.add(link)
+            titulo_limpio = re.sub(r"\\s*@\\s*(Bogotá|Bogota)\\s*$", "", titulo_actual, flags=re.IGNORECASE).strip()
+            es_bogota = bool(re.search(r"@\\s*(Bogotá|Bogota)\\b", titulo_actual, re.IGNORECASE))
+            lugar_limpio = lugar_actual or "Bogotá"
 
-            time_tag = p.select_one("time, .entry-date, .published, span.date")
-            fecha = "N/A"
-            if time_tag:
-                fecha = time_tag.get_text(strip=True)
-            else:
-                m_f = re.search(
-                    r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})",
-                    p.get_text(" ", strip=True)
-                )
-                if m_f:
-                    fecha = m_f.group(1)
+            if not es_bogota and not re.search(r"Bogotá|Bogota", lugar_limpio, re.IGNORECASE):
+                return
 
-            img_tag = p.select_one("img")
-            img_url = img_tag.get("src").strip() if (img_tag and img_tag.get("src")) else None
+            clave = f"{titulo_limpio}|{fecha_actual}|{lugar_limpio}".lower()
+            clave = re.sub(r"\\s+", " ", clave).strip()
+            if clave in vistos:
+                return
+            vistos.add(clave)
+
+            slug = re.sub(r"[^a-z0-9]+", "-", clave).strip("-")[:100]
+            link = f"{url}#evento-{slug}"
 
             eventos.append({
-                "titulo": titulo,
-                "fecha": fecha,
-                "lugar": "Bogotá",
+                "titulo": titulo_limpio,
+                "fecha": fecha_actual,
+                "lugar": lugar_limpio,
                 "link": link,
-                "img": img_url,
+                "img": None,
                 "fuente": "Factor Metal"
             })
+
+        for linea in lineas:
+            if patron_fecha.match(linea):
+                guardar_evento()
+                fecha_actual = linea
+                titulo_actual = None
+                hora_actual = None
+                lugar_actual = None
+                continue
+
+            if linea.startswith("## "):
+                linea = linea[3:].strip()
+
+            if " @ " in linea:
+                guardar_evento()
+                titulo_actual = linea
+                hora_actual = None
+                lugar_actual = None
+                continue
+
+            if patron_hora.match(linea):
+                hora_actual = linea
+                continue
+
+            if linea.startswith("📍"):
+                lugar_actual = linea.replace("📍", "", 1).strip()
+                continue
+
+        guardar_evento()
+
     except Exception as e:
         log(f"Error Factor Metal: {e}")
 
