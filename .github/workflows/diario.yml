@@ -34,7 +34,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SCRAPER_DRY_RUN: "true"
         run: python scraper_conciertos.py
 
       - name: Guardar historial
