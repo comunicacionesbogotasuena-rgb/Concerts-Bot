@@ -481,9 +481,11 @@ def main():
     # para evitar una avalancha de notificaciones al migrar desde URLs de artículos.
     factor_events = [ev for ev in todos_eventos if ev.get("fuente") == "Factor Metal" and ev.get("event_key")]
     factor_keys_existentes = {x for x in historial if isinstance(x, str) and x.startswith("factormetal|")}
+    baseline_creado = False
     if factor_events and not factor_keys_existentes:
         baseline_keys = [ev["event_key"] for ev in factor_events]
         historial.extend(baseline_keys)
+        baseline_creado = True
         log(f"Factor Metal: línea base inicial creada con {len(baseline_keys)} eventos; no se notifican en esta ejecución.")
 
     novedades = []
@@ -506,6 +508,8 @@ def main():
     log(f"Novedades reales a despachar: {len(novedades)}")
 
     if not novedades:
+        if baseline_creado:
+            save_registered_events(historial)
         log("Todo al día. No se envían notificaciones.")
         return
 
