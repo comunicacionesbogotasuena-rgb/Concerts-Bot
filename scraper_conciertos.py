@@ -244,15 +244,19 @@ def scrape_paramo_playwright(page):
 # 3. FACTOR METAL
 def scrape_factormetal_playwright(page):
     eventos = []
-    url = "https://factormetal.com/conciertos/"
+    url = "https://www.factormetal.com/conciertos/"
     vistos = set()
 
     try:
         log("Abriendo Factor Metal (Agenda de Conciertos)...")
-        page.goto(url, timeout=25000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.encoding = "utf-8"
 
-        soup = BeautifulSoup(page.content(), "html.parser")
+        if r.status_code != 200:
+            log(f"Factor Metal HTTP error: {r.status_code}")
+            return eventos
+
+        soup = BeautifulSoup(r.text, "html.parser")
         headings = soup.select("h2")
         log(f"Factor Metal: {len(headings)} encabezados de evento detectados")
 
@@ -266,20 +270,27 @@ def scrape_factormetal_playwright(page):
             if " @ " not in titulo_raw:
                 continue
 
-            titulo = re.sub(r"\s*@\s*(Bogotá|Bogota)\s*$", "", titulo_raw, flags=re.IGNORECASE).strip()
-            es_bogota = bool(re.search(r"@\s*(Bogotá|Bogota)\b", titulo_raw, re.IGNORECASE)
-                            or re.search(r"Bogotá|Bogota", titulo_raw, re.IGNORECASE))
-            if not es_bogota:
+            titulo = re.sub(
+                r"\s*@\s*(Bogotá|Bogota)\s*$",
+                "",
+                titulo_raw,
+                flags=re.IGNORECASE
+            ).strip()
+
+            if not re.search(r"@\s*(Bogotá|Bogota)\b", titulo_raw, re.IGNORECASE):
                 continue
 
-            # Subimos por el DOM hasta encontrar el bloque que contiene fecha/hora/lugar.
             bloque = heading.parent
             texto_bloque = ""
+
             for _ in range(6):
                 if bloque is None:
                     break
                 texto_bloque = bloque.get_text(" ", strip=True)
-                if patron_fecha.search(texto_bloque) and ("📍" in texto_bloque or "Bogotá" in texto_bloque or "Bogota" in texto_bloque):
+                if patron_fecha.search(texto_bloque) and (
+                    "📍" in texto_bloque
+                    or re.search(r"Bogotá|Bogota", texto_bloque, re.IGNORECASE)
+                ):
                     break
                 bloque = bloque.parent
 
@@ -291,34 +302,28 @@ def scrape_factormetal_playwright(page):
                 continue
             fecha = m_fecha.group(1)
 
-            # El lugar aparece después de 📍 en el bloque del evento.
             lugar = "Bogotá"
-            m_lugar = re.search(r"📍\s*(.+?)(?=Ver Mapa|Agregar a Calendario|$)", texto_bloque, re.IGNORECASE)
+            m_lugar = re.search(
+                r"📍\s*(.+?)(?=Ver Mapa|Agregar a Calendario|$)",
+                texto_bloque,
+                re.IGNORECASE
+            )
             if m_lugar:
                 lugar = re.sub(r"\s+", " ", m_lugar.group(1)).strip(" -|")
-            elif "Bogotá" in texto_bloque or "Bogota" in texto_bloque:
-                m_ciudad = re.search(r"([^|]{0,120}(?:Bogotá|Bogota)[^|]{0,120})", texto_bloque, re.IGNORECASE)
-                if m_ciudad:
-                    lugar = re.sub(r"\s+", " ", m_ciudad.group(1)).strip()
 
-            clave = f"{titulo}|{fecha}|{lugar}".lower()
-            clave = re.sub(r"\s+", " ", clave).strip()
+            clave = normalizar_event_key(titulo, fecha, "Bogotá")
             if clave in vistos:
                 continue
             vistos.add(clave)
-
-            slug = re.sub(r"[^a-z0-9]+", "-", clave).strip("-")[:100]
-            link = url
-            event_key = "factormetal|" + normalizar_event_key(titulo, fecha, "Bogotá")
 
             eventos.append({
                 "titulo": titulo,
                 "fecha": fecha,
                 "lugar": lugar,
-                "link": link,
+                "link": url,
                 "img": None,
                 "fuente": "Factor Metal",
-                "event_key": event_key
+                "event_key": "factormetal|" + clave
             })
 
     except Exception as e:
