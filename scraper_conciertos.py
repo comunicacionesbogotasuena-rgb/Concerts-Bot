@@ -245,83 +245,72 @@ def scrape_factormetal_playwright(page):
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
 
-        html = page.content()
-        soup = BeautifulSoup(html, "html.parser")
-        lineas = [re.sub(r"\\s+", " ", x).strip() for x in soup.get_text("\n", strip=True).split("\n")]
-        lineas = [x for x in lineas if x]
-
-        log("Factor Metal: procesando agenda estructurada")
-
-        fecha_actual = None
-        titulo_actual = None
-        hora_actual = None
-        lugar_actual = None
+        soup = BeautifulSoup(page.content(), "html.parser")
+        headings = soup.select("h2")
+        log(f"Factor Metal: {len(headings)} encabezados de evento detectados")
 
         patron_fecha = re.compile(
-            r"^\\d{1,2}\\s+(?:de\\s+)?[a-zA-Záéíóúñ]+,?\\s+\\d{4}$",
+            r"(\d{1,2}\s+(?:de\s+)?[a-zA-Záéíóúñ]+,?\s+\d{4})",
             re.IGNORECASE
         )
-        patron_hora = re.compile(r"^.*?\\d{1,2}:\\d{2}\\s*(?:AM|PM)\\s*-\\s*\\d{1,2}:\\d{2}\\s*(?:AM|PM).*$", re.IGNORECASE)
 
-        def guardar_evento():
-            nonlocal titulo_actual, hora_actual, lugar_actual, fecha_actual
+        for heading in headings:
+            titulo_raw = heading.get_text(" ", strip=True)
+            if " @ " not in titulo_raw:
+                continue
 
-            if not titulo_actual or not fecha_actual:
-                return
+            titulo = re.sub(r"\s*@\s*(Bogotá|Bogota)\s*$", "", titulo_raw, flags=re.IGNORECASE).strip()
+            es_bogota = bool(re.search(r"@\s*(Bogotá|Bogota)\b", titulo_raw, re.IGNORECASE)
+                            or re.search(r"Bogotá|Bogota", titulo_raw, re.IGNORECASE))
+            if not es_bogota:
+                continue
 
-            titulo_limpio = re.sub(r"\\s*@\\s*(Bogotá|Bogota)\\s*$", "", titulo_actual, flags=re.IGNORECASE).strip()
-            es_bogota = bool(re.search(r"@\\s*(Bogotá|Bogota)\\b", titulo_actual, re.IGNORECASE))
-            lugar_limpio = lugar_actual or "Bogotá"
+            # Subimos por el DOM hasta encontrar el bloque que contiene fecha/hora/lugar.
+            bloque = heading.parent
+            texto_bloque = ""
+            for _ in range(6):
+                if bloque is None:
+                    break
+                texto_bloque = bloque.get_text(" ", strip=True)
+                if patron_fecha.search(texto_bloque) and ("📍" in texto_bloque or "Bogotá" in texto_bloque or "Bogota" in texto_bloque):
+                    break
+                bloque = bloque.parent
 
-            if not es_bogota and not re.search(r"Bogotá|Bogota", lugar_limpio, re.IGNORECASE):
-                return
+            if not texto_bloque:
+                continue
 
-            clave = f"{titulo_limpio}|{fecha_actual}|{lugar_limpio}".lower()
-            clave = re.sub(r"\\s+", " ", clave).strip()
+            m_fecha = patron_fecha.search(texto_bloque)
+            if not m_fecha:
+                continue
+            fecha = m_fecha.group(1)
+
+            # El lugar aparece después de 📍 en el bloque del evento.
+            lugar = "Bogotá"
+            m_lugar = re.search(r"📍\s*(.+?)(?=Ver Mapa|Agregar a Calendario|$)", texto_bloque, re.IGNORECASE)
+            if m_lugar:
+                lugar = re.sub(r"\s+", " ", m_lugar.group(1)).strip(" -|")
+            elif "Bogotá" in texto_bloque or "Bogota" in texto_bloque:
+                m_ciudad = re.search(r"([^|]{0,120}(?:Bogotá|Bogota)[^|]{0,120})", texto_bloque, re.IGNORECASE)
+                if m_ciudad:
+                    lugar = re.sub(r"\s+", " ", m_ciudad.group(1)).strip()
+
+            clave = f"{titulo}|{fecha}|{lugar}".lower()
+            clave = re.sub(r"\s+", " ", clave).strip()
             if clave in vistos:
-                return
+                continue
             vistos.add(clave)
 
             slug = re.sub(r"[^a-z0-9]+", "-", clave).strip("-")[:100]
             link = f"{url}#evento-{slug}"
 
             eventos.append({
-                "titulo": titulo_limpio,
-                "fecha": fecha_actual,
-                "lugar": lugar_limpio,
+                "titulo": titulo,
+                "fecha": fecha,
+                "lugar": lugar,
                 "link": link,
                 "img": None,
                 "fuente": "Factor Metal"
             })
-
-        for linea in lineas:
-            if patron_fecha.match(linea):
-                guardar_evento()
-                fecha_actual = linea
-                titulo_actual = None
-                hora_actual = None
-                lugar_actual = None
-                continue
-
-            if linea.startswith("## "):
-                linea = linea[3:].strip()
-
-            if " @ " in linea:
-                guardar_evento()
-                titulo_actual = linea
-                hora_actual = None
-                lugar_actual = None
-                continue
-
-            if patron_hora.match(linea):
-                hora_actual = linea
-                continue
-
-            if linea.startswith("📍"):
-                lugar_actual = linea.replace("📍", "", 1).strip()
-                continue
-
-        guardar_evento()
 
     except Exception as e:
         log(f"Error Factor Metal: {e}")
