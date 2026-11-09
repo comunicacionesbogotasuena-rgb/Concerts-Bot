@@ -3,8 +3,8 @@ name: Scraper Conciertos Rock y Metal
 
 on:
   schedule:
-    # Todos los días a las 07:00 UTC (02:00 AM en Bogotá)
-    - cron: '0 7 * * *'
+    # Todos los días a las 23:00 UTC (06:00 PM en Bogotá)
+    - cron: '0 23 * * *'
   workflow_dispatch:
 
 permissions:
