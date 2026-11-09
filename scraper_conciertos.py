@@ -25,12 +25,40 @@ MESES = {
     "sep": "Septiembre", "oct": "Octubre", "nov": "Noviembre", "dic": "Diciembre"
 }
 
+def normalizar_url(url, base_url=None):
+    if not url:
+        return ""
+    url = str(url).strip()
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/") or not url.startswith("http"):
+        if base_url:
+            from urllib.parse import urljoin
+            url = urljoin(base_url, url)
+    return url.rstrip("/")
+
+
 def load_registered_events():
     if os.path.exists(JSON_FILE):
         try:
             with open(JSON_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return data if isinstance(data, list) else []
+                if not isinstance(data, list):
+                    return []
+
+                historial = []
+                vistos = set()
+                for item in data:
+                    if not isinstance(item, str):
+                        continue
+                    url = normalizar_url(item)
+                    if not url or url in vistos:
+                        continue
+                    vistos.add(url)
+                    historial.append(url)
+                return historial
         except Exception as e:
             log(f"Aviso cargando JSON ({e}). Iniciando vacío.")
             return []
@@ -38,8 +66,17 @@ def load_registered_events():
 
 def save_registered_events(events):
     try:
+        historial_limpio = []
+        vistos = set()
+        for event_url in events:
+            url = normalizar_url(event_url)
+            if not url or url in vistos:
+                continue
+            vistos.add(url)
+            historial_limpio.append(url)
+
         with open(JSON_FILE, "w", encoding="utf-8") as f:
-            json.dump(events, f, indent=2, ensure_ascii=False)
+            json.dump(historial_limpio, f, indent=2, ensure_ascii=False)
         log("Historial persistido correctamente en eventos_registrados.json")
     except Exception as e:
         log(f"Error guardando JSON: {e}")
@@ -209,35 +246,41 @@ def scrape_factormetal_playwright(page):
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
-        
         posts = soup.select("article, .post, .entry, div[class*='post-']")
         log(f"Factor Metal: {len(posts)} notas detectadas")
 
         for p in posts:
-            enlaces = p.find_all("a", href=True)
+            # Solo aceptar enlaces individuales de eventos.
+            # Esto evita convertir noticias/artículos antiguos en conciertos.
             a_tag = None
-            
-            for lk in enlaces:
+            for lk in p.find_all("a", href=True):
+                href = normalizar_url(lk["href"].strip(), "https://factormetal.com")
+                if not href or "/evento/" not in href.lower():
+                    continue
+
                 tx = lk.get_text(" ", strip=True)
-                hr = lk["href"].strip()
-                if len(tx) > 7 and "category/conciertos" not in hr and not hr.endswith("#"):
-                    bad_words = [
-                        "ver mapa", "agregar a calendario", "google calendar", "ical", 
-                        "inicio", "contacto", "política", "privacidad", "facebook", 
-                        "twitter", "comentarios", "leer más", "compartir"
-                    ]
-                    if not any(bad in tx.lower() for bad in bad_words):
-                        a_tag = lk
-                        break
+                if len(tx) < 7:
+                    continue
+
+                bad_words = [
+                    "ver mapa", "agregar a calendario", "google calendar", "ical",
+                    "inicio", "contacto", "política", "privacidad", "facebook",
+                    "twitter", "comentarios", "leer más", "compartir"
+                ]
+                if not any(bad in tx.lower() for bad in bad_words):
+                    a_tag = lk
+                    break
 
             if not a_tag:
                 continue
 
-            link = a_tag["href"].strip().rstrip("/")
+            link = normalizar_url(a_tag["href"].strip(), "https://factormetal.com")
             if not link or link in vistos:
                 continue
 
             titulo = a_tag.get_text(" ", strip=True)
+            if not titulo:
+                continue
             vistos.add(link)
 
             time_tag = p.select_one("time, .entry-date, .published, span.date")
@@ -245,7 +288,10 @@ def scrape_factormetal_playwright(page):
             if time_tag:
                 fecha = time_tag.get_text(strip=True)
             else:
-                m_f = re.search(r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})", p.get_text(" ", strip=True))
+                m_f = re.search(
+                    r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})",
+                    p.get_text(" ", strip=True)
+                )
                 if m_f:
                     fecha = m_f.group(1)
 
@@ -279,16 +325,17 @@ def scrape_ticketshows_playwright(page):
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
-        
         cards = soup.select("a[href*='/evento/'], a[href*='/eventos/'], div[class*='event'] a, div[class*='card'] a")
-        
+
         for a in cards:
             href = (a.get("href") or "").strip()
-            clean_href = href.rstrip("/")
-            if not clean_href or clean_href == "https://ticketshows.co" or clean_href in vistos:
+            clean_href = normalizar_url(href, url)
+            if not clean_href or clean_href in vistos:
                 continue
-            if not clean_href.startswith("http"):
-                clean_href = f"https://ticketshows.co{clean_href}"
+
+            path = clean_href.lower()
+            if not any(x in path for x in ["/events/", "/evento/", "/eventos/"]):
+                continue
 
             texto = a.get_text(" ", strip=True)
             if not texto or len(texto) < 4:
