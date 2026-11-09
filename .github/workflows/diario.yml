@@ -51,18 +51,5 @@ jobs:
 
           git commit -m "Actualizar conciertos registrados [skip ci]"
 
-          for attempt in 1 2 3; do
-            git fetch origin main
-            git rebase origin/main
-
-            if git push origin HEAD:main; then
-              echo "Historial actualizado correctamente."
-              exit 0
-            fi
-
-            echo "Intento $attempt fallido; se volverá a intentar."
-            sleep 2
-          done
-
-          echo "No fue posible actualizar el historial."
-          exit 1
+          echo "Modo de prueba: no se publica el historial en main."
+          exit 0
