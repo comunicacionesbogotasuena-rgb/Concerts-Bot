@@ -26,6 +26,13 @@ MESES = {
     "sep": "Septiembre", "oct": "Octubre", "nov": "Noviembre", "dic": "Diciembre"
 }
 
+def normalizar_event_key(titulo, fecha, ciudad="Bogotá"):
+    partes = [titulo or "", fecha or "", ciudad or ""]
+    texto = "|".join(partes).lower()
+    texto = re.sub(r"[^a-z0-9áéíóúñ|]+", " ", texto)
+    texto = re.sub(r"\\s+", " ", texto).strip()
+    return texto
+
 def normalizar_url(url, base_url=None):
     if not url:
         return ""
@@ -301,7 +308,8 @@ def scrape_factormetal_playwright(page):
             vistos.add(clave)
 
             slug = re.sub(r"[^a-z0-9]+", "-", clave).strip("-")[:100]
-            link = f"{url}#evento-{slug}"
+            link = url
+            event_key = "factormetal|" + normalizar_event_key(titulo, fecha, "Bogotá")
 
             eventos.append({
                 "titulo": titulo,
@@ -309,7 +317,8 @@ def scrape_factormetal_playwright(page):
                 "lugar": lugar,
                 "link": link,
                 "img": None,
-                "fuente": "Factor Metal"
+                "fuente": "Factor Metal",
+                "event_key": event_key
             })
 
     except Exception as e:
@@ -467,17 +476,31 @@ def main():
 
     log(f"Total eventos recopilados: {len(todos_eventos)}")
 
+    # Primera ejecución con el nuevo parser de Factor Metal:
+    # toma como línea base los eventos que ya están publicados en su agenda,
+    # para evitar una avalancha de notificaciones al migrar desde URLs de artículos.
+    factor_events = [ev for ev in todos_eventos if ev.get("fuente") == "Factor Metal" and ev.get("event_key")]
+    factor_keys_existentes = {x for x in historial if isinstance(x, str) and x.startswith("factormetal|")}
+    if factor_events and not factor_keys_existentes:
+        baseline_keys = [ev["event_key"] for ev in factor_events]
+        historial.extend(baseline_keys)
+        log(f"Factor Metal: línea base inicial creada con {len(baseline_keys)} eventos; no se notifican en esta ejecución.")
+
     novedades = []
     nombres_enviados = set()
+    claves_enviadas = set()
 
     for ev in todos_eventos:
         link = (ev.get("link") or "").strip()
         titulo = (ev.get("titulo") or "").strip()
+        event_key = (ev.get("event_key") or "").strip()
         key_tit = re.sub(r"[^a-zA-Z0-9]", "", titulo.lower())
+        clave_historial = event_key or link
 
-        if link and link != "N/A" and link not in historial:
-            if key_tit not in nombres_enviados:
+        if clave_historial and clave_historial != "N/A" and clave_historial not in historial and link not in historial:
+            if key_tit not in nombres_enviados and clave_historial not in claves_enviadas:
                 nombres_enviados.add(key_tit)
+                claves_enviadas.add(clave_historial)
                 novedades.append(ev)
 
     log(f"Novedades reales a despachar: {len(novedades)}")
@@ -490,7 +513,7 @@ def main():
     for n in novedades:
         ok = notificar_telegram(n)
         if ok:
-            historial.append(n["link"].strip())
+            historial.append((n.get("event_key") or n["link"]).strip())
             enviados_ok += 1
             time.sleep(2.0)
         else:
