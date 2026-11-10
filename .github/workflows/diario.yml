@@ -34,6 +34,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCRAPER_DRY_RUN: "true"
         run: python scraper_conciertos.py
 
       - name: Guardar historial
@@ -48,20 +49,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Actualizar conciertos registrados [skip ci]"
-
-          for attempt in 1 2 3; do
-            git fetch origin main
-            git rebase origin/main
-
-            if git push origin HEAD:main; then
-              echo "Historial actualizado correctamente."
-              exit 0
-            fi
-
-            echo "Intento $attempt fallido; se volverá a intentar."
-            sleep 2
-          done
-
-          echo "No fue posible actualizar el historial."
-          exit 1
+          git commit -m "Actualizar historial de prueba [skip ci]"
+          echo "🧪 Modo de prueba: no se publica el historial en main."
