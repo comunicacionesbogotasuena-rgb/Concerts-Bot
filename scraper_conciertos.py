@@ -12,6 +12,7 @@ def log(msg):
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DRY_RUN = os.getenv("SCRAPER_DRY_RUN", "").lower() == "true"
 JSON_FILE = "eventos_registrados.json"
 
 HEADERS = {
@@ -427,7 +428,9 @@ def notificar_telegram(evento):
 def main():
     log("=== INICIANDO EJECUCIÓN DEL SCRAPER ===")
     
-    if not BOT_TOKEN or not CHAT_ID:
+    if DRY_RUN:
+        log("🧪 MODO PRUEBA: Telegram desactivado; no se enviarán mensajes.")
+    elif not BOT_TOKEN or not CHAT_ID:
         log("ERROR CRÍTICO: Credenciales de Telegram faltantes.")
         return
 
@@ -476,6 +479,9 @@ def main():
 
     enviados_ok = 0
     for n in novedades:
+        if DRY_RUN:
+            log(f"🧪 DRY RUN: no se envía a Telegram: {n.get('titulo')}")
+            continue
         ok = notificar_telegram(n)
         if ok:
             historial.append(n["link"].strip())
