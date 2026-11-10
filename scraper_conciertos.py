@@ -236,7 +236,7 @@ def scrape_paramo_playwright(page):
 # 3. FACTOR METAL
 def scrape_factormetal_playwright(page):
     eventos = []
-    url = "https://factormetal.com/category/conciertos/"
+    url = "https://www.factormetal.com/conciertos/"
     vistos = set()
 
     try:
@@ -255,7 +255,7 @@ def scrape_factormetal_playwright(page):
             a_tag = None
             for lk in p.find_all("a", href=True):
                 href = normalizar_url(lk["href"].strip(), "https://factormetal.com")
-                if not href or "/evento/" not in href.lower():
+                if not href or "/conciertos/" not in href.lower():
                     continue
 
                 tx = lk.get_text(" ", strip=True)
