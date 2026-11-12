@@ -240,72 +240,105 @@ def scrape_factormetal_playwright(page):
     vistos = set()
 
     try:
-        log("Abriendo Factor Metal (Categoría Conciertos)...")
+        log("Abriendo Factor Metal (Agenda de Conciertos)...")
         page.goto(url, timeout=25000, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
-        posts = soup.select("article, .post, .entry, div[class*='post-']")
-        log(f"Factor Metal: {len(posts)} notas detectadas")
 
-        for p in posts:
-            # Solo aceptar enlaces individuales de eventos.
-            # Esto evita convertir noticias/artículos antiguos en conciertos.
-            a_tag = None
-            for lk in p.find_all("a", href=True):
-                href = normalizar_url(lk["href"].strip(), "https://factormetal.com")
-                if not href or "/conciertos/" not in href.lower():
-                    continue
+        # La agenda actual presenta los eventos como bloques con H2 + fecha + ubicación.
+        headings = soup.select("h2")
+        log(f"Factor Metal: {len(headings)} títulos de eventos potenciales detectados")
 
-                tx = lk.get_text(" ", strip=True)
-                if len(tx) < 7:
-                    continue
+        meses = (
+            "enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+            "septiembre|octubre|noviembre|diciembre"
+        )
+        fecha_re = re.compile(
+            rf"(\d{{1,2}}\s+(?:{meses})\s*,\s*\d{{4}})",
+            re.IGNORECASE
+        )
 
-                bad_words = [
-                    "ver mapa", "agregar a calendario", "google calendar", "ical",
-                    "inicio", "contacto", "política", "privacidad", "facebook",
-                    "twitter", "comentarios", "leer más", "compartir"
-                ]
-                if not any(bad in tx.lower() for bad in bad_words):
-                    a_tag = lk
+        for h2 in headings:
+            titulo = h2.get_text(" ", strip=True)
+            if not titulo or "@" not in titulo or len(titulo) < 4:
+                continue
+
+            # Factor Metal es una agenda nacional; BogotáSuena solo debe
+            # procesar eventos cuya ciudad sea Bogotá.
+            ciudad_match = re.search(r"@\s*([^@]+?)\s*$", titulo)
+            if not ciudad_match:
+                continue
+
+            ciudad = ciudad_match.group(1).strip()
+            if ciudad.lower().replace(".", "") not in {"bogotá", "bogota"}:
+                continue
+
+            # Buscar el bloque mínimo que contiene este evento completo.
+            contenedor = None
+            padre = h2
+            for _ in range(7):
+                padre = padre.parent
+                if not padre:
+                    break
+                texto_padre = padre.get_text(" ", strip=True)
+                if (
+                    fecha_re.search(texto_padre)
+                    and "Agregar a Calendario" in texto_padre
+                    and len(padre.find_all("h2")) == 1
+                ):
+                    contenedor = padre
                     break
 
-            if not a_tag:
+            if not contenedor:
                 continue
 
-            link = normalizar_url(a_tag["href"].strip(), "https://factormetal.com")
-            if not link or link in vistos:
+            texto = contenedor.get_text(" ", strip=True)
+            fecha_match = fecha_re.search(texto)
+            if not fecha_match:
                 continue
 
-            titulo = a_tag.get_text(" ", strip=True)
-            if not titulo:
+            fecha = fecha_match.group(1)
+
+            # Solo usar el venue si Factor Metal lo publica explícitamente.
+            # Si no aparece, no inventamos uno.
+            lugar = ""
+            ubicacion_match = re.search(
+                r"📍\s*(.+?)(?=\s+(?:Ver Mapa|Agregar a Calendario)\b|$)",
+                texto
+            )
+            if ubicacion_match:
+                lugar = ubicacion_match.group(1).strip(" -")
+
+            # La agenda no ofrece un enlace individual utilizable por evento.
+            # Se conserva un fragmento estable para deduplicación/historial.
+            slug_base = f"{fecha}-{titulo}"
+            slug = re.sub(r"[^a-z0-9]+", "-", slug_base.lower()).strip("-")
+            link = f"{url}#{slug}"
+
+            if link in vistos:
                 continue
             vistos.add(link)
 
-            time_tag = p.select_one("time, .entry-date, .published, span.date")
-            fecha = "N/A"
-            if time_tag:
-                fecha = time_tag.get_text(strip=True)
-            else:
-                m_f = re.search(
-                    r"(\d{1,2}\s+de\s+[a-zA-Z]+\s+de\s+\d{4}|\d{1,2}\s+[a-zA-Z]{3,9}\s+\d{4})",
-                    p.get_text(" ", strip=True)
-                )
-                if m_f:
-                    fecha = m_f.group(1)
-
-            img_tag = p.select_one("img")
-            img_url = img_tag.get("src").strip() if (img_tag and img_tag.get("src")) else None
+            img_tag = contenedor.select_one("img")
+            img_url = None
+            if img_tag:
+                img_url = (
+                    img_tag.get("src")
+                    or img_tag.get("data-src")
+                    or ""
+                ).strip() or None
 
             eventos.append({
                 "titulo": titulo,
                 "fecha": fecha,
-                "lugar": "Bogotá",
+                "lugar": lugar or "Bogotá (venue no especificado)",
                 "link": link,
                 "img": img_url,
                 "fuente": "Factor Metal"
             })
+
     except Exception as e:
         log(f"Error Factor Metal: {e}")
 
