@@ -256,7 +256,7 @@ def scrape_factormetal_playwright(page):
             "septiembre|octubre|noviembre|diciembre"
         )
         fecha_re = re.compile(
-            rf"(\\d{{1,2}}\\s+(?:{meses})\\s*,\\s*\\d{{4}})",
+            rf"(\d{{1,2}}\s+(?:{meses})\s*,\s*\d{{4}})",
             re.IGNORECASE
         )
 
@@ -267,7 +267,7 @@ def scrape_factormetal_playwright(page):
 
             # Factor Metal es una agenda nacional; BogotáSuena solo debe
             # procesar eventos cuya ciudad sea Bogotá.
-            ciudad_match = re.search(r"@\\s*([^@]+?)\\s*$", titulo)
+            ciudad_match = re.search(r"@\s*([^@]+?)\s*$", titulo)
             if not ciudad_match:
                 continue
 
@@ -305,7 +305,7 @@ def scrape_factormetal_playwright(page):
             # Si no aparece, no inventamos uno.
             lugar = ""
             ubicacion_match = re.search(
-                r"📍\\s*(.+?)(?=\\s+(?:Ver Mapa|Agregar a Calendario)\\b|$)",
+                r"📍\s*(.+?)(?=\s+(?:Ver Mapa|Agregar a Calendario)\b|$)",
                 texto
             )
             if ubicacion_match:
@@ -333,7 +333,7 @@ def scrape_factormetal_playwright(page):
             eventos.append({
                 "titulo": titulo,
                 "fecha": fecha,
-                "lugar": lugar or "Bogotá",
+                "lugar": lugar or "Bogotá (venue no especificado)",
                 "link": link,
                 "img": img_url,
                 "fuente": "Factor Metal"
