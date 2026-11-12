@@ -247,8 +247,7 @@ def scrape_factormetal_playwright(page):
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
 
-        # La agenda actual no usa enlaces /conciertos/... para cada evento.
-        # Los conciertos aparecen como bloques con un H2, fecha y ubicación.
+        # La agenda actual presenta los eventos como bloques con H2 + fecha + ubicación.
         headings = soup.select("h2")
         log(f"Factor Metal: {len(headings)} títulos de eventos potenciales detectados")
 
@@ -257,13 +256,23 @@ def scrape_factormetal_playwright(page):
             "septiembre|octubre|noviembre|diciembre"
         )
         fecha_re = re.compile(
-            rf"(\d{{1,2}}\s+(?:{meses})\s*,\s*\d{{4}})",
+            rf"(\\d{{1,2}}\\s+(?:{meses})\\s*,\\s*\\d{{4}})",
             re.IGNORECASE
         )
 
         for h2 in headings:
             titulo = h2.get_text(" ", strip=True)
             if not titulo or "@" not in titulo or len(titulo) < 4:
+                continue
+
+            # Factor Metal es una agenda nacional; BogotáSuena solo debe
+            # procesar eventos cuya ciudad sea Bogotá.
+            ciudad_match = re.search(r"@\\s*([^@]+?)\\s*$", titulo)
+            if not ciudad_match:
+                continue
+
+            ciudad = ciudad_match.group(1).strip()
+            if ciudad.lower().replace(".", "") not in {"bogotá", "bogota"}:
                 continue
 
             # Buscar el bloque mínimo que contiene este evento completo.
@@ -291,18 +300,19 @@ def scrape_factormetal_playwright(page):
                 continue
 
             fecha = fecha_match.group(1)
-            ciudad_match = re.search(r"@\s*([^@]+?)\s*$", titulo)
-            ciudad = ciudad_match.group(1).strip() if ciudad_match else "Colombia"
 
-            # El venue aparece después del indicador de ubicación.
-            lugar = ciudad
-            ubicacion_match = re.search(r"📍\s*(.+?)(?=\s+(?:Ver Mapa|Agregar a Calendario)\b|$)", texto)
+            # Solo usar el venue si Factor Metal lo publica explícitamente.
+            # Si no aparece, no inventamos uno.
+            lugar = ""
+            ubicacion_match = re.search(
+                r"📍\\s*(.+?)(?=\\s+(?:Ver Mapa|Agregar a Calendario)\\b|$)",
+                texto
+            )
             if ubicacion_match:
                 lugar = ubicacion_match.group(1).strip(" -")
 
-            # Usar una URL estable con fragmento para que cada evento tenga
-            # una clave única en eventos_registrados.json. La página de agenda
-            # es la fuente oficial de Factor Metal para estos eventos.
+            # La agenda no ofrece un enlace individual utilizable por evento.
+            # Se conserva un fragmento estable para deduplicación/historial.
             slug_base = f"{fecha}-{titulo}"
             slug = re.sub(r"[^a-z0-9]+", "-", slug_base.lower()).strip("-")
             link = f"{url}#{slug}"
@@ -314,12 +324,16 @@ def scrape_factormetal_playwright(page):
             img_tag = contenedor.select_one("img")
             img_url = None
             if img_tag:
-                img_url = (img_tag.get("src") or img_tag.get("data-src") or "").strip() or None
+                img_url = (
+                    img_tag.get("src")
+                    or img_tag.get("data-src")
+                    or ""
+                ).strip() or None
 
             eventos.append({
                 "titulo": titulo,
                 "fecha": fecha,
-                "lugar": lugar,
+                "lugar": lugar or "Bogotá",
                 "link": link,
                 "img": img_url,
                 "fuente": "Factor Metal"
